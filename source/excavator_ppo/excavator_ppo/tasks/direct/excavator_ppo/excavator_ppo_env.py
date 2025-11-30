@@ -21,17 +21,18 @@ from .excavator_ppo_env_cfg import ExcavatorPpoEnvCfg
 class ExcavatorPpoEnv(DirectRLEnv):
     cfg: ExcavatorPpoEnvCfg
 
+    #初始化，接收自身配置参数
     def __init__(self, cfg: ExcavatorPpoEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        self._cart_dof_idx, _ = self.robot.find_joints(self.cfg.cart_dof_name)
+        self._cart_dof_idx, _ = self.robot.find_joints(self.cfg.cart_dof_name) #关节索引，下划线表示是内部变量
         self._pole_dof_idx, _ = self.robot.find_joints(self.cfg.pole_dof_name)
 
-        self.joint_pos = self.robot.data.joint_pos
+        self.joint_pos = self.robot.data.joint_pos #关节位置，简短别名来访问复杂数据路径
         self.joint_vel = self.robot.data.joint_vel
 
     def _setup_scene(self):
-        self.robot = Articulation(self.cfg.robot_cfg)
+        self.robot = Articulation(self.cfg.robot_cfg) #机器人为Articulation类型，传入配置参数
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         # clone and replicate
@@ -45,25 +46,29 @@ class ExcavatorPpoEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
+    #更新动作，得到动作张量的副本
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        self.actions = actions.clone()
+        self.actions = actions.clone() #避免修改原始动作张量，将获取数据与正在训练的张量分离
 
+    #应用动作，更新的数据应用于物理模拟，为指定关节设置期望目标值
     def _apply_action(self) -> None:
         self.robot.set_joint_effort_target(self.actions * self.cfg.action_scale, joint_ids=self._cart_dof_idx)
 
+    #获取观测
     def _get_observations(self) -> dict:
         obs = torch.cat(
             (
-                self.joint_pos[:, self._pole_dof_idx[0]].unsqueeze(dim=1),
-                self.joint_vel[:, self._pole_dof_idx[0]].unsqueeze(dim=1),
-                self.joint_pos[:, self._cart_dof_idx[0]].unsqueeze(dim=1),
-                self.joint_vel[:, self._cart_dof_idx[0]].unsqueeze(dim=1),
+                self.joint_pos[:, self._pole_dof_idx[0]].unsqueeze(dim=1), #杆的角度
+                self.joint_vel[:, self._pole_dof_idx[0]].unsqueeze(dim=1), #杆的角速度
+                self.joint_pos[:, self._cart_dof_idx[0]].unsqueeze(dim=1), #小车的位置
+                self.joint_vel[:, self._cart_dof_idx[0]].unsqueeze(dim=1), #小车的速度
             ),
             dim=-1,
         )
         observations = {"policy": obs}
         return observations
 
+    #获取奖励，计算函数compute_rewards见最后
     def _get_rewards(self) -> torch.Tensor:
         total_reward = compute_rewards(
             self.cfg.rew_scale_alive,
@@ -79,6 +84,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         )
         return total_reward
 
+    #获取终止状态，返回是否越界和是否超时
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         self.joint_pos = self.robot.data.joint_pos
         self.joint_vel = self.robot.data.joint_vel
@@ -88,32 +94,34 @@ class ExcavatorPpoEnv(DirectRLEnv):
         out_of_bounds = out_of_bounds | torch.any(torch.abs(self.joint_pos[:, self._pole_dof_idx]) > math.pi / 2, dim=1)
         return out_of_bounds, time_out
 
-    def _reset_idx(self, env_ids: Sequence[int] | None):
+    #重置环境
+    def _reset_idx(self, env_ids: Sequence[int] | None): #env_ids表示要重置的环境索引
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
-        super()._reset_idx(env_ids)
+        super()._reset_idx(env_ids) #调用父类的重置方法
 
-        joint_pos = self.robot.data.default_joint_pos[env_ids]
-        joint_pos[:, self._pole_dof_idx] += sample_uniform(
+        #重置流程：获取默认初始状态 -> 调整位置到环境原点 -> 写入模拟器
+        joint_pos = self.robot.data.default_joint_pos[env_ids] #获取默认关节位置
+        joint_pos[:, self._pole_dof_idx] += sample_uniform( #对杆的初始角度进行随机采样，为特定关节索引添加随机偏移
             self.cfg.initial_pole_angle_range[0] * math.pi,
             self.cfg.initial_pole_angle_range[1] * math.pi,
             joint_pos[:, self._pole_dof_idx].shape,
             joint_pos.device,
         )
-        joint_vel = self.robot.data.default_joint_vel[env_ids]
+        joint_vel = self.robot.data.default_joint_vel[env_ids] #获取默认关节速度
 
-        default_root_state = self.robot.data.default_root_state[env_ids]
-        default_root_state[:, :3] += self.scene.env_origins[env_ids]
+        default_root_state = self.robot.data.default_root_state[env_ids] #获取默认根状态
+        default_root_state[:, :3] += self.scene.env_origins[env_ids] #将根位置调整到各自环境的原点
 
-        self.joint_pos[env_ids] = joint_pos
+        self.joint_pos[env_ids] = joint_pos #更新关节位置和速度
         self.joint_vel[env_ids] = joint_vel
 
-        self.robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
-        self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
-        self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+        self.robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids) #写入根位置和姿态
+        self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids) #写入根速度
+        self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids) #写入关节位置和速度
 
 
-@torch.jit.script
+@torch.jit.script 
 def compute_rewards(
     rew_scale_alive: float,
     rew_scale_terminated: float,

@@ -3,12 +3,12 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from isaaclab_assets.robots.cartpole import CARTPOLE_CFG
+from isaaclab_assets.robots.cartpole import CARTPOLE_CFG #倒立摆机器人配置
 
-from isaaclab.assets import ArticulationCfg
+from isaaclab.assets import ArticulationCfg #机器人配置
 from isaaclab.envs import DirectRLEnvCfg
-from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg
+from isaaclab.scene import InteractiveSceneCfg #交互场景配置，环境数量、环境间距、物理复制
+from isaaclab.sim import SimulationCfg #模拟配置，时间步长、渲染间隔
 from isaaclab.utils import configclass
 
 
@@ -26,7 +26,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
 
     # robot(s)
-    robot_cfg: ArticulationCfg = CARTPOLE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+    robot_cfg: ArticulationCfg = CARTPOLE_CFG.replace(prim_path="/World/envs/env_.*/Robot") #替换所有副本路径
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=4.0, replicate_physics=True)
