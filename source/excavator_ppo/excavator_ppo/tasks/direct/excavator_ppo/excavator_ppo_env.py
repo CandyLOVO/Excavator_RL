@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 from __future__ import annotations
 
 import math
@@ -25,11 +20,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
     def __init__(self, cfg: ExcavatorPpoEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        self._cart_dof_idx, _ = self.robot.find_joints(self.cfg.cart_dof_name) #关节索引，下划线表示是内部变量
-        self._pole_dof_idx, _ = self.robot.find_joints(self.cfg.pole_dof_name)
-
-        self.joint_pos = self.robot.data.joint_pos #关节位置，简短别名来访问复杂数据路径
-        self.joint_vel = self.robot.data.joint_vel
+        self._dof_idx, _ = self.robot.find_joints(self.cfg.dof_name) #关节索引
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg) #机器人为Articulation类型，传入配置参数
@@ -37,9 +28,6 @@ class ExcavatorPpoEnv(DirectRLEnv):
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
-        # we need to explicitly filter collisions for CPU simulation
-        if self.device == "cpu":
-            self.scene.filter_collisions(global_prim_paths=[])
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
         # add lights
@@ -52,47 +40,25 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
     #应用动作，更新的数据应用于物理模拟，为指定关节设置期望目标值
     def _apply_action(self) -> None:
-        self.robot.set_joint_effort_target(self.actions * self.cfg.action_scale, joint_ids=self._cart_dof_idx)
+        self.robot.set_position_target(self.actions, joint_ids=self._dof_idx) #设置目标位置
 
     #获取观测
     def _get_observations(self) -> dict:
-        obs = torch.cat(
-            (
-                self.joint_pos[:, self._pole_dof_idx[0]].unsqueeze(dim=1), #杆的角度
-                self.joint_vel[:, self._pole_dof_idx[0]].unsqueeze(dim=1), #杆的角速度
-                self.joint_pos[:, self._cart_dof_idx[0]].unsqueeze(dim=1), #小车的位置
-                self.joint_vel[:, self._cart_dof_idx[0]].unsqueeze(dim=1), #小车的速度
-            ),
-            dim=-1,
-        )
+        self.joint_pos = self.robot.data.joint_pos
+        self.robot_vel = self.robot.data.root_com_vel_b
+        obs = torch.hstack((self.joint_pos, self.robot_vel))
         observations = {"policy": obs}
         return observations
 
     #获取奖励，计算函数compute_rewards见最后
     def _get_rewards(self) -> torch.Tensor:
-        total_reward = compute_rewards(
-            self.cfg.rew_scale_alive,
-            self.cfg.rew_scale_terminated,
-            self.cfg.rew_scale_pole_pos,
-            self.cfg.rew_scale_cart_vel,
-            self.cfg.rew_scale_pole_vel,
-            self.joint_pos[:, self._pole_dof_idx[0]],
-            self.joint_vel[:, self._pole_dof_idx[0]],
-            self.joint_pos[:, self._cart_dof_idx[0]],
-            self.joint_vel[:, self._cart_dof_idx[0]],
-            self.reset_terminated,
-        )
+        total_reward = torch.linalg.norm(self.robot.data.root_com_vel_b, dim=1)
         return total_reward
 
     #获取终止状态，返回是否越界和是否超时
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        self.joint_pos = self.robot.data.joint_pos
-        self.joint_vel = self.robot.data.joint_vel
-
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        out_of_bounds = torch.any(torch.abs(self.joint_pos[:, self._cart_dof_idx]) > self.cfg.max_cart_pos, dim=1)
-        out_of_bounds = out_of_bounds | torch.any(torch.abs(self.joint_pos[:, self._pole_dof_idx]) > math.pi / 2, dim=1)
-        return out_of_bounds, time_out
+        return time_out
 
     #重置环境
     def _reset_idx(self, env_ids: Sequence[int] | None): #env_ids表示要重置的环境索引
@@ -102,23 +68,18 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         #重置流程：获取默认初始状态 -> 调整位置到环境原点 -> 写入模拟器
         joint_pos = self.robot.data.default_joint_pos[env_ids] #获取默认关节位置
-        joint_pos[:, self._pole_dof_idx] += sample_uniform( #对杆的初始角度进行随机采样，为特定关节索引添加随机偏移
-            self.cfg.initial_pole_angle_range[0] * math.pi,
-            self.cfg.initial_pole_angle_range[1] * math.pi,
-            joint_pos[:, self._pole_dof_idx].shape,
-            joint_pos.device,
-        )
-        joint_vel = self.robot.data.default_joint_vel[env_ids] #获取默认关节速度
+        # joint_pos[:, self._dof_idx] += sample_uniform( #对杆的初始角度进行随机采样，为特定关节索引添加随机偏移
+        #     self.cfg.initial_angle_range[0] * math.pi,
+        #     self.cfg.initial_angle_range[1] * math.pi,
+        #     joint_pos[:, self._dof_idx].shape,
+        #     joint_pos.device,
+        # )
+        self.joint_pos[env_ids] = joint_pos #更新关节位置
+        self.robot.write_joint_position_to_sim(joint_pos, None, env_ids)
 
         default_root_state = self.robot.data.default_root_state[env_ids] #获取默认根状态
         default_root_state[:, :3] += self.scene.env_origins[env_ids] #将根位置调整到各自环境的原点
-
-        self.joint_pos[env_ids] = joint_pos #更新关节位置和速度
-        self.joint_vel[env_ids] = joint_vel
-
-        self.robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids) #写入根位置和姿态
-        self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids) #写入根速度
-        self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids) #写入关节位置和速度
+        self.robot.write_root_state_to_sim(default_root_state, env_ids) #写入关节位置和速度
 
 
 @torch.jit.script 
