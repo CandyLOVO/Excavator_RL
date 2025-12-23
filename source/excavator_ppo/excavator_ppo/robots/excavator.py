@@ -4,7 +4,7 @@ from isaaclab.actuators import ImplicitActuatorCfg #隐式执行器配置，PD�
 
 EXCAVATOR_CFG = ArticulationCfg(
     spawn = sim_utils.UsdFileCfg(
-        usd_path="./excavator_ppo/source/excavator_ppo/excavator_ppo/robots/USD/excavator_JCB/excavator_JCB.usd",
+        usd_path="excavator_ppo/source/excavator_ppo/excavator_ppo/robots/USD/excavator_six_wheels/excavator_six_wheels.usd",
         #USDFileCfg对刚性体和机器人等具有特殊参数
         #刚体属性
         rigid_props = sim_utils.RigidBodyPropertiesCfg(
@@ -16,10 +16,10 @@ EXCAVATOR_CFG = ArticulationCfg(
             max_depenetration_velocity=1.0, #最大穿透速度：1m/s的速度来修正穿透
         ),
         #关节求解器属性
-        Articulation_props = sim_utils.ArticulationRootPropertiesCfg(
-            enable_self_collisions = True, #启用自碰撞
-            solver_position_iteration_count = 8, #位置求解迭代次数，迭代调整物体位置，解决物体之间的穿透问题
-            solver_velocity_iteration_count = 0, #速度求解迭代次数，解决约束相关的速度问题（如反弹、摩擦）：设置为0,物理引擎只解决穿透，不改变速度，速度完全由控制器决定
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=False, 
+            solver_position_iteration_count=4, 
+            solver_velocity_iteration_count=0,
         ),
     ),
 
@@ -36,32 +36,44 @@ EXCAVATOR_CFG = ArticulationCfg(
     #定义执行器（电机）
     actuators = {
         "body_joint": ImplicitActuatorCfg(
-            joint_name="body_yaw_joint",
+            joint_names_expr=["body_yaw_joint"],
             stiffness=10000.0, #位置控制的刚度（N·m/rad）
             damping=1000.0, #阻尼（N·m·s/rad）
             effort_limit_sim=30000.0, #最大力矩/力（N·m）
-            max_velocity=2.0, #rad/s
+            velocity_limit_sim=2.0, #rad/s
         ),
         "boom_joint": ImplicitActuatorCfg(
-            joint_name="boom_pitch_joint",
+            joint_names_expr=["boom_pitch_joint"],
             stiffness=80000.0,
             damping=8000.0,
             effort_limit_sim=120000.0,
-            max_velocity=1.5,
+            velocity_limit_sim=1.5,
         ),
         "forearm_joint": ImplicitActuatorCfg(
-            joint_name="forearm_pitch_joint",
+            joint_names_expr=["forearm_pitch_joint"],
             stiffness=60000.0,
             damping=6000.0,
             effort_limit_sim=90000.0,
-            max_velocity=1.8,
+            velocity_limit_sim=1.8,
         ),
         "bucket_joint": ImplicitActuatorCfg(
-            joint_name="bucket_pitch_joint",
+            joint_names_expr=["bucket_pitch_joint"],
             stiffness=40000.0,
             damping=4000.0,
             effort_limit_sim=60000.0,
-            max_velocity=2.0,
+            velocity_limit_sim=2.0,
+        ),
+        "wheel_joints": ImplicitActuatorCfg(
+            joint_names_expr=[
+                "left_wheel_joint",
+                "right_wheel_joint",
+                "left_front_wheel_joint",
+                "right_front_wheel_joint",
+                "left_behind_wheel_joint",
+                "right_behind_wheel_joint",
+            ],
+            damping=None,
+            stiffness=None,
         ),
     },
 )

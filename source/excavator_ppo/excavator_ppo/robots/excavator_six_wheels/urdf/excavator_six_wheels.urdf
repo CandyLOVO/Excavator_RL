@@ -1,0 +1,592 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="excavator_six_wheels">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="0.4294466 0.0012485 0.0380234"
+        rpy="0 0 0" />
+      <mass
+        value="1344.5600138" />
+      <inertia
+        ixx="488.87838"
+        ixy="-1.5516108"
+        ixz="-14.9719563"
+        iyy="896.834612"
+        iyz="-0.0436094"
+        izz="1351.9933489" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.77647 0.75686 0.73725 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="body_yaw_link">
+    <inertial>
+      <origin
+        xyz="0.059888 -0.0279846 0.310737"
+        rpy="0 0 0" />
+      <mass
+        value="15120.6382761" />
+      <inertia
+        ixx="5306.8842701"
+        ixy="534.6037913"
+        ixz="123.0400587"
+        iyy="7722.9004147"
+        iyz="49.3613714"
+        izz="9448.3819272" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/body_yaw_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 0.94902 0.9098 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/body_yaw_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="body_yaw_joint"
+    type="continuous">
+    <origin
+      xyz="0 0 0.36323"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="body_yaw_link" />
+    <axis
+      xyz="0 0 1" />
+  </joint>
+  <link
+    name="boom_pitch_link">
+    <inertial>
+      <origin
+        xyz="0.4173408 -1.1341658 -0.0415453"
+        rpy="0 0 0" />
+      <mass
+        value="724.9528599" />
+      <inertia
+        ixx="282.0599045"
+        ixy="118.3342235"
+        ixz="0.0157727"
+        iyy="101.1092455"
+        iyz="-0.2015522"
+        izz="371.1804289" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/boom_pitch_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.69804 0.69804 0.69804 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/boom_pitch_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="boom_pitch_joint"
+    type="revolute">
+    <origin
+      xyz="1.5882 0.039526 0.36333"
+      rpy="-1.5708 0 0" />
+    <parent
+      link="body_yaw_link" />
+    <child
+      link="boom_pitch_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="1.3703"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="forearm_pitch_link">
+    <inertial>
+      <origin
+        xyz="0.3521181 -0.2255539 -0.328097"
+        rpy="0 0 0" />
+      <mass
+        value="640.9527498" />
+      <inertia
+        ixx="17.2472302"
+        ixy="14.7010027"
+        ixz="-0.0567428"
+        iyy="203.3293746"
+        iyz="-0.0303271"
+        izz="211.0722199" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/forearm_pitch_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.69804 0.69804 0.69804 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/forearm_pitch_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="forearm_pitch_joint"
+    type="revolute">
+    <origin
+      xyz="1.4233 -2.0381 0.28664"
+      rpy="0 0 0" />
+    <parent
+      link="boom_pitch_link" />
+    <child
+      link="forearm_pitch_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="0.89604"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="bucket_pitch_link">
+    <inertial>
+      <origin
+        xyz="0.1222283 -0.3650323 -0.6245809"
+        rpy="0 0 0" />
+      <mass
+        value="643.2329046" />
+      <inertia
+        ixx="70.6614633"
+        ixy="9.1064215"
+        ixz="0.1324507"
+        iyy="141.5186677"
+        iyz="-0.0280834"
+        izz="146.0667006" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/bucket_pitch_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 0.94902 0.9098 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/bucket_pitch_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="bucket_pitch_joint"
+    type="revolute">
+    <origin
+      xyz="1.4765 -0.24997 0.29735"
+      rpy="0 0 0" />
+    <parent
+      link="forearm_pitch_link" />
+    <child
+      link="bucket_pitch_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="2.2837"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="left_wheel_link">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="80.8643451" />
+      <inertia
+        ixx="2.0389608"
+        ixy="0"
+        ixz="0"
+        iyy="2.0389608"
+        iyz="2.47E-05"
+        izz="2.4269412" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/left_wheel_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.29804 0.29804 0.29804 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/left_wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_wheel_joint"
+    type="continuous">
+    <origin
+      xyz="-0.029784 1.1184 0"
+      rpy="-1.5708 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="left_wheel_link" />
+    <axis
+      xyz="0 0 1" />
+  </joint>
+  <link
+    name="right_wheel_link">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="80.8643451" />
+      <inertia
+        ixx="2.0389608"
+        ixy="0"
+        ixz="0"
+        iyy="2.0389608"
+        iyz="2.47E-05"
+        izz="2.4269412" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/right_wheel_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.29804 0.29804 0.29804 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/right_wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right_wheel_joint"
+    type="continuous">
+    <origin
+      xyz="-0.029784 -1.1174 0"
+      rpy="-1.5708 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="right_wheel_link" />
+    <axis
+      xyz="0 0 1" />
+  </joint>
+  <link
+    name="left_front_wheel_link">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="80.8643451" />
+      <inertia
+        ixx="2.0389608"
+        ixy="0"
+        ixz="0"
+        iyy="2.0389608"
+        iyz="2.47E-05"
+        izz="2.4269412" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/left_front_wheel_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.29804 0.29804 0.29804 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/left_front_wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_front_wheel_joint"
+    type="continuous">
+    <origin
+      xyz="0.90862 1.1184 0"
+      rpy="-1.5708 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="left_front_wheel_link" />
+    <axis
+      xyz="0 0 1" />
+  </joint>
+  <link
+    name="left_behind_wheel_link">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="80.8643451" />
+      <inertia
+        ixx="2.0389608"
+        ixy="0"
+        ixz="0"
+        iyy="2.0389608"
+        iyz="2.47E-05"
+        izz="2.4269412" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/left_behind_wheel_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.29804 0.29804 0.29804 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/left_behind_wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_behind_wheel_joint"
+    type="continuous">
+    <origin
+      xyz="-0.96819 1.1184 0"
+      rpy="-1.5708 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="left_behind_wheel_link" />
+    <axis
+      xyz="0 0 1" />
+  </joint>
+  <link
+    name="right_front_wheel_link">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="80.8643451" />
+      <inertia
+        ixx="2.0389608"
+        ixy="0"
+        ixz="0"
+        iyy="2.0389608"
+        iyz="2.47E-05"
+        izz="2.4269412" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/right_front_wheel_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.29804 0.29804 0.29804 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/right_front_wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right_front_wheel_joint"
+    type="continuous">
+    <origin
+      xyz="0.90862 -1.1179 0"
+      rpy="-1.5708 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="right_front_wheel_link" />
+    <axis
+      xyz="0 0 1" />
+  </joint>
+  <link
+    name="right_behind_wheel_link">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="80.8643451" />
+      <inertia
+        ixx="2.0389608"
+        ixy="0"
+        ixz="0"
+        iyy="2.0389608"
+        iyz="2.47E-05"
+        izz="2.4269412" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/right_behind_wheel_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.29804 0.29804 0.29804 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://excavator_six_wheels/meshes/right_behind_wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right_behind_wheel_joint"
+    type="continuous">
+    <origin
+      xyz="-0.96819 -1.1174 0"
+      rpy="-1.5708 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="right_behind_wheel_link" />
+    <axis
+      xyz="0 0 1" />
+  </joint>
+</robot>

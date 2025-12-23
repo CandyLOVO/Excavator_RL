@@ -1,0 +1,1 @@
+controller_joint_names: ['', 'body_yaw_joint', 'boom_pitch_joint', 'forearm_pitch_joint', 'bucket_pitch_joint', 'left_wheel_joint', 'right_wheel_joint', 'left_front_wheel_joint', 'left_behind_wheel_joint', 'right_front_wheel_joint', 'right_behind_wheel_joint', ]
