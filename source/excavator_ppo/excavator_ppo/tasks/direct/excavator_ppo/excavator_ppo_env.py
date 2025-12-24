@@ -23,6 +23,11 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self._body_dof_idx, _ = self.robot.find_joints(self.cfg.body_dof_name) #关节索引
         self._wheel_dof_idx, _ = self.robot.find_joints(self.cfg.wheel_dof_name)
         self.joint_pos = self.robot.data.joint_pos
+        self.dof_pos_lower_limits = self.robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
+        self.dof_pos_upper_limits = self.robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)
+        self.pos_actions = torch.zeros((self.num_envs, len(self._body_dof_idx)), device=self.device)
+
+        self.dt = self.cfg.sim.dt * self.cfg.decimation
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg) #机器人为Articulation类型，传入配置参数
@@ -39,12 +44,16 @@ class ExcavatorPpoEnv(DirectRLEnv):
     #更新动作，得到动作张量的副本
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone() #避免修改原始动作张量，将获取数据与正在训练的张量分离
+        body_vel_actions = torch.clamp(self.actions[:, :len(self._body_dof_idx)], -1.0, 1.0) #将actions解释为速度
+        body_pos_actions = self.pos_actions + self.dt * body_vel_actions * self.cfg.position_action_scale #将actions解释为位置
+        self.pos_actions = torch.clamp(body_pos_actions, self.dof_pos_lower_limits[self._body_dof_idx], self.dof_pos_upper_limits[self._body_dof_idx])
+        self.vel_actions = self.actions[:, len(self._body_dof_idx):]
 
     #应用动作，更新的数据应用于物理模拟，为指定关节设置期望目标值
     def _apply_action(self) -> None:
-        #######################################位置控制对actions解释改为相对变化
-        self.robot.set_joint_position_target(self.actions[:, :len(self._body_dof_idx)],  joint_ids=self._body_dof_idx) #设置目标位置
-        self.robot.set_joint_velocity_target(self.actions[:, len(self._body_dof_idx):], joint_ids=self._wheel_dof_idx) #设置目标速度
+        self.robot.set_joint_position_target(self.pos_actions, joint_ids=self._body_dof_idx) #设置目标位置
+        self.robot.set_joint_velocity_target(self.vel_actions, joint_ids=self._wheel_dof_idx) #设置目标速度
+
     #获取观测
     def _get_observations(self) -> dict:
         self.robot_lin_vel = self.robot.data.root_com_lin_vel_b

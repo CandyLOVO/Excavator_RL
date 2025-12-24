@@ -29,3 +29,4 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     wheel_dof_name = ["left_wheel_joint", "right_wheel_joint", "left_front_wheel_joint", "right_front_wheel_joint", "left_behind_wheel_joint", "right_behind_wheel_joint"]
 
     # initial_angle_range = [0.0, 0.25]
+    position_action_scale = 2.3
