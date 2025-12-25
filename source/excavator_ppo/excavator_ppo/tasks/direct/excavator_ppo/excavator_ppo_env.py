@@ -47,37 +47,38 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         #################创建指令向量（目标值）##################
         self.commands = torch.randn((self.cfg.scene.num_envs, 3)).to(device=self.device) #初始随机指令——世界坐标系
-        self.commands[:,-1] = 0.0
-        self.commands = self.commands/torch.linalg.norm(self.commands, dim=1, keepdim=True) #归一化
+        self.commands[:, -1] = 0.0
+        cmd_norm = torch.linalg.norm(self.commands, dim=1, keepdim=True).clamp_min(1e-6)
+        self.commands = self.commands / cmd_norm
         #####################################################
-
-        self.yaws = torch.atan2(self.commands[:, 1], self.commands[:, 0]).unsqueeze(1) #command的偏航角，(-pi, pi]
-        self.up_dir = torch.tensor([0.0, 0.0, 1.0]).to(device=self.device) #向量Z轴
 
         #####################创建可视化标记#####################
         self.visualization_markers = define_markers()
         self.marker_locations = torch.zeros((self.cfg.scene.num_envs, 3)).to(device=self.device) #标记位置
         self.marker_offset = torch.zeros((self.cfg.scene.num_envs, 3)).to(device=self.device) #标记偏移量
-        self.marker_offset[:,-1] = 3.0 #标记在Z轴上方2米
+        self.marker_offset[:, -1] = 3.0 #标记在Z轴上方2米
         self.forward_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4)).to(device=self.device) #底盘朝向标记四元数
         self.command_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4)).to(device=self.device) #指令朝向标记四元数
         ######################################################
+
+        self.yaws = torch.atan2(self.commands[:, 1], self.commands[:, 0]).unsqueeze(1) #command的偏航角，(-pi, pi]
+        self.up_dir = torch.tensor([0.0, 0.0, 1.0]).to(device=self.device) #向量Z轴
    
     def _visualize_markers(self):
-            # get marker locations and orientations
-            self.marker_locations = self.robot.data.root_pos_w #机器人位置——世界坐标系
-            self.forward_marker_orientations = self.robot.data.root_quat_w
-            self.command_marker_orientations = math_utils.quat_from_angle_axis(self.yaws, self.up_dir).squeeze()
+        # get marker locations and orientations
+        self.marker_locations = self.robot.data.root_pos_w #机器人位置——世界坐标系
+        self.forward_marker_orientations = self.robot.data.root_quat_w
+        self.command_marker_orientations = math_utils.quat_from_angle_axis(self.yaws, self.up_dir).squeeze()
 
-            # offset markers so they are above the jetbot
-            loc = self.marker_locations + self.marker_offset
-            loc = torch.vstack((loc, loc)) #两个标记的位置
-            rots = torch.vstack((self.forward_marker_orientations, self.command_marker_orientations)) #两个标记的朝向
+        # offset markers so they are above the jetbot
+        loc = self.marker_locations + self.marker_offset
+        loc = torch.vstack((loc, loc)) #两个标记的位置
+        rots = torch.vstack((self.forward_marker_orientations, self.command_marker_orientations)) #两个标记的朝向
 
-            # render the markers
-            all_envs = torch.arange(self.cfg.scene.num_envs)
-            indices = torch.hstack((torch.zeros_like(all_envs), torch.ones_like(all_envs))) #标记索引：0-前进方向，1-指令方向
-            self.visualization_markers.visualize(loc, rots, marker_indices=indices)
+        # render the markers
+        all_envs = torch.arange(self.cfg.scene.num_envs)
+        indices = torch.hstack((torch.zeros_like(all_envs), torch.ones_like(all_envs))) #标记索引：0-前进方向，1-指令方向
+        self.visualization_markers.visualize(loc, rots, marker_indices=indices)
 
     #更新动作，得到动作张量的副本
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
@@ -96,14 +97,27 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
     #获取观测
     def _get_observations(self) -> dict:
-        self.robot_lin_vel = self.robot.data.root_com_lin_vel_b
-        obs = torch.hstack((self.joint_pos[:, self._body_dof_idx], self.robot_lin_vel))
+        self.robot_lin_vel = self.robot.data.root_com_lin_vel_w
+
+        self.forwards = math_utils.quat_apply(self.robot.data.root_quat_w, self.robot.data.FORWARD_VEC_B) #将机器人本体前进方向向量（单位向量，仅方向）转换到世界坐标系
+        dot = torch.sum(self.forwards * self.commands, dim=-1, keepdim=True)
+        cross = torch.cross(self.forwards, self.commands, dim=-1)[:,-1].reshape(-1,1)
+
+        obs = torch.hstack((self.robot_lin_vel, dot, cross))
         observations = {"policy": obs}
         return observations
 
     #获取奖励，计算函数compute_rewards见最后
     def _get_rewards(self) -> torch.Tensor:
-        total_reward = torch.linalg.norm(self.robot.data.root_com_lin_vel_b, dim=1)
+        # forward_velocity = torch.sum(self.robot.data.root_lin_vel_w[:, :2] * self.commands[:, :2], dim=-1) #在命令方向的速度投影
+        # velocity_reward = torch.clamp(forward_velocity, 0, 1.0)
+        
+        dot = torch.sum(self.forwards * self.commands, dim=-1, keepdim=True)
+        cross = torch.cross(self.forwards, self.commands, dim=-1)[:,-1].reshape(-1,1) 
+        yaw_error = torch.atan2(cross, dot) #使用反正切函数计算偏航误差，范围[-π, π]
+        yaw_reward = torch.exp(-3*torch.abs(yaw_error)).squeeze(-1)
+
+        total_reward = yaw_reward
         return total_reward
 
     #获取终止状态，返回是否越界和是否超时

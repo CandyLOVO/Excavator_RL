@@ -14,7 +14,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
 
     # - spaces definition
     action_space = 10
-    observation_space = 7
+    observation_space = 5
     state_space = 0
 
     # simulation
@@ -24,9 +24,9 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = EXCAVATOR_CFG.replace(prim_path="/World/envs/env_.*/Robot") #替换所有副本路径
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=500, env_spacing=15.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2048, env_spacing=15.0, replicate_physics=True)
     body_dof_name = ["body_yaw_joint", "boom_pitch_joint", "forearm_pitch_joint", "bucket_pitch_joint"]
-    wheel_dof_name = ["left_wheel_joint", "right_wheel_joint", "left_front_wheel_joint", "right_front_wheel_joint", "left_behind_wheel_joint", "right_behind_wheel_joint"]
+    wheel_dof_name = ["left_wheel_joint", "right_wheel_joint", "left_front_wheel_joint", "left_behind_wheel_joint", "right_front_wheel_joint", "right_behind_wheel_joint"]
 
     # initial_angle_range = [0.0, 0.25]
     position_action_scale = 2.3
