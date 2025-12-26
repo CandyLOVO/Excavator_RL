@@ -19,7 +19,7 @@ EXCAVATOR_CFG = ArticulationCfg(
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=False, 
             solver_position_iteration_count=4, 
-            solver_velocity_iteration_count=0,
+            solver_velocity_iteration_count=4,
         ),
     ),
 
@@ -72,8 +72,10 @@ EXCAVATOR_CFG = ArticulationCfg(
                 "left_behind_wheel_joint",
                 "right_behind_wheel_joint",
             ],
-            damping=None,
-            stiffness=None,
+            stiffness=0.0,       # 必须为 0，代表不控制位置
+            damping=10000.0,     # 设置较大的阻尼，它在速度模式下充当 P 增益
+            effort_limit=500000.0,  # 给一个极大的力矩限制（50万 N·m），确保推得动重型底盘
+            velocity_limit=5.0,
         ),
     },
 )

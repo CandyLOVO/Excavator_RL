@@ -24,12 +24,16 @@ class ExcavatorPpoEnv(DirectRLEnv):
     def __init__(self, cfg: ExcavatorPpoEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        self._body_dof_idx, _ = self.robot.find_joints(self.cfg.body_dof_name) #关节索引
-        self._wheel_dof_idx, _ = self.robot.find_joints(self.cfg.wheel_dof_name)
+        self.num_body_dof = len(self.cfg.body_dof_name)
+        self.num_wheel_dof = len(self.cfg.wheel_dof_name)
+        # self._body_dof_idx, _ = self.robot.find_joints(self.cfg.dof_name[:self.num_body_dof]) #关节索引 0~3
+        # self._wheel_dof_idx, _ = self.robot.find_joints(self.cfg.dof_name[self.num_body_dof:]) #4~9
+        self._wheel_dof_idx, self._wheel_dof_name = self.robot.find_joints(self.cfg.wheel_dof_name) #0~5
+
         self.joint_pos = self.robot.data.joint_pos
         self.dof_pos_lower_limits = self.robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
         self.dof_pos_upper_limits = self.robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)
-        self.pos_actions = torch.zeros((self.num_envs, len(self._body_dof_idx)), device=self.device)
+        # self.pos_actions = torch.zeros((self.num_envs, len(self._body_dof_idx)), device=self.device)
 
         self.dt = self.cfg.sim.dt * self.cfg.decimation
 
@@ -82,42 +86,66 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
     #更新动作，得到动作张量的副本
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        self.actions = actions.clone() #避免修改原始动作张量，将获取数据与正在训练的张量分离
-        body_vel_actions = torch.clamp(self.actions[:, self._body_dof_idx], -1.0, 1.0) #将actions解释为速度
-        body_pos_actions = self.pos_actions + self.dt * body_vel_actions * self.cfg.position_action_scale #将actions解释为位置
-        self.pos_actions = torch.clamp(body_pos_actions, self.dof_pos_lower_limits[self._body_dof_idx], self.dof_pos_upper_limits[self._body_dof_idx])
-        self.vel_actions = self.actions[:, self._wheel_dof_idx]
+        # self.actions = actions.clone() #避免修改原始动作张量，将获取数据与正在训练的张量分离
+        # body_vel_actions = torch.clamp(self.actions[:, self._body_dof_idx], -1.0, 1.0) #将actions解释为速度
+        # body_pos_actions = self.pos_actions + self.dt * body_vel_actions * self.cfg.position_action_scale #将actions解释为位置
+        # self.pos_actions = torch.clamp(body_pos_actions, self.dof_pos_lower_limits[self._body_dof_idx], self.dof_pos_upper_limits[self._body_dof_idx])
+        # self.vel_actions = self.actions[:, self._wheel_dof_idx]
+
+        vel_actions = actions.clone() * self.cfg.action_scale
+        left_wheel_vel = vel_actions[:, 0]   # 左侧履带速度
+        right_wheel_vel = vel_actions[:, 1]  # 右侧履带速度
+        
+        # 应用到所有轮子 - 履带式控制
+        self.vel_actions = torch.zeros((self.num_envs, self.num_wheel_dof), device=self.device)
+        self.vel_actions[:, 0] = left_wheel_vel      # left_wheel_joint
+        self.vel_actions[:, 1] = left_wheel_vel      # left_front_wheel_joint  
+        self.vel_actions[:, 2] = left_wheel_vel      # left_behind_wheel_joint
+        self.vel_actions[:, 3] = right_wheel_vel     # right_wheel_joint
+        self.vel_actions[:, 4] = right_wheel_vel     # right_front_wheel_joint
+        self.vel_actions[:, 5] = right_wheel_vel     # right_behind_wheel_joint
 
         self._visualize_markers()
 
     #应用动作，更新的数据应用于物理模拟，为指定关节设置期望目标值
     def _apply_action(self) -> None:
-        self.robot.set_joint_position_target(self.pos_actions, joint_ids=self._body_dof_idx) #设置目标位置
+        # self.robot.set_joint_position_target(self.pos_actions, joint_ids=self._body_dof_idx) #设置目标位置
         self.robot.set_joint_velocity_target(self.vel_actions, joint_ids=self._wheel_dof_idx) #设置目标速度
 
     #获取观测
     def _get_observations(self) -> dict:
         self.robot_lin_vel = self.robot.data.root_com_lin_vel_w
-
-        self.forwards = math_utils.quat_apply(self.robot.data.root_quat_w, self.robot.data.FORWARD_VEC_B) #将机器人本体前进方向向量（单位向量，仅方向）转换到世界坐标系
+        self.robot_ang_vel = self.robot.data.root_com_ang_vel_w
+        
+        self.forwards = math_utils.quat_apply(self.robot.data.root_quat_w, self.robot.data.FORWARD_VEC_B)
         dot = torch.sum(self.forwards * self.commands, dim=-1, keepdim=True)
         cross = torch.cross(self.forwards, self.commands, dim=-1)[:,-1].reshape(-1,1)
+        yaw_error = torch.atan2(cross, dot)
+        normalized_yaw_error = yaw_error / math.pi
 
-        obs = torch.hstack((self.robot_lin_vel, dot, cross))
+        commands_body = math_utils.quat_apply_inverse(self.robot.data.root_quat_w, self.commands)
+        
+        obs = torch.hstack((
+            self.robot_lin_vel,
+            normalized_yaw_error,
+            commands_body[:, :2] # 目标方向在机器人坐标系中的xy分量 [2维]
+        ))
+        
         observations = {"policy": obs}
         return observations
 
     #获取奖励，计算函数compute_rewards见最后
-    def _get_rewards(self) -> torch.Tensor:
-        # forward_velocity = torch.sum(self.robot.data.root_lin_vel_w[:, :2] * self.commands[:, :2], dim=-1) #在命令方向的速度投影
-        # velocity_reward = torch.clamp(forward_velocity, 0, 1.0)
-        
+    def _get_rewards(self) -> torch.Tensor:    
         dot = torch.sum(self.forwards * self.commands, dim=-1, keepdim=True)
         cross = torch.cross(self.forwards, self.commands, dim=-1)[:,-1].reshape(-1,1) 
-        yaw_error = torch.atan2(cross, dot) #使用反正切函数计算偏航误差，范围[-π, π]
-        yaw_reward = torch.exp(-3*torch.abs(yaw_error)).squeeze(-1)
+        yaw_error = torch.atan2(cross, dot)  # 偏航误差，范围[-π, π]
+        yaw_reward = torch.exp(-3.0 * torch.abs(yaw_error)).squeeze(-1)
+
+        forward_velocity = torch.sum(self.robot.data.root_lin_vel_w[:, :2] * self.commands[:, :2], dim=-1) #在命令方向的速度投影
+        forward_reward = torch.clamp(forward_velocity, 0.0, 2.0) * 0.5
 
         total_reward = yaw_reward
+        
         return total_reward
 
     #获取终止状态，返回是否越界和是否超时
