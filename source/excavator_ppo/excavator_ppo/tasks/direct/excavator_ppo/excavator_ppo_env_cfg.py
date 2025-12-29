@@ -14,7 +14,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
 
     # - spaces definition
     action_space = 2
-    observation_space = 6
+    observation_space = 16
     state_space = 0
 
     # simulation
@@ -25,13 +25,11 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2048, env_spacing=15.0, replicate_physics=True)
-    body_dof_name = ["body_yaw_joint", "boom_pitch_joint", "forearm_pitch_joint", "bucket_pitch_joint"]
+    body_dof_name = ["body_yaw_joint", "boom_pitch_joint", "forearm_pitch_joint", "bucket_pitch_joint"] #无所谓顺序，只是提供查询字典
     wheel_dof_name = ["left_wheel_joint", "left_front_wheel_joint", "left_behind_wheel_joint", "right_wheel_joint", "right_front_wheel_joint", "right_behind_wheel_joint"]
-    # left_wheel_dof_name = ["left_wheel_joint", "left_front_wheel_joint", "left_behind_wheel_joint"]
-    # right_wheel_dof_name = ["right_wheel_joint", "right_front_wheel_joint", "right_behind_wheel_joint"]
-    dof_name = ["body_yaw_joint", "boom_pitch_joint", "forearm_pitch_joint", "bucket_pitch_joint",
-                "left_wheel_joint", "left_front_wheel_joint", "left_behind_wheel_joint", "right_wheel_joint", "right_front_wheel_joint", "right_behind_wheel_joint"]
-
+    left_wheel_dof_name = ["left_wheel_joint", "left_front_wheel_joint", "left_behind_wheel_joint"] #1、2、3
+    right_wheel_dof_name = ["right_wheel_joint", "right_front_wheel_joint", "right_behind_wheel_joint"] #4、5、6
+    
     # initial_angle_range = [0.0, 0.25]
     position_action_scale = 2.3
-    action_scale = 10.0  # 增加动力，确保挖掘机能够移动和转向
+    action_scale = 7.5  # 增加动力，确保挖掘机能够移动和转向

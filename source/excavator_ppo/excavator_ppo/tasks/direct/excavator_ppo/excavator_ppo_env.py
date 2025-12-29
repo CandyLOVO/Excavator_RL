@@ -26,16 +26,19 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         self.num_body_dof = len(self.cfg.body_dof_name)
         self.num_wheel_dof = len(self.cfg.wheel_dof_name)
-        # self._body_dof_idx, _ = self.robot.find_joints(self.cfg.dof_name[:self.num_body_dof]) #关节索引 0~3
-        # self._wheel_dof_idx, _ = self.robot.find_joints(self.cfg.dof_name[self.num_body_dof:]) #4~9
-        self._wheel_dof_idx, self._wheel_dof_name = self.robot.find_joints(self.cfg.wheel_dof_name) #0~5
-
+        self._body_dof_idx, _ = self.robot.find_joints(self.cfg.body_dof_name) #关节索引 0、7、8、9
+        self._wheel_dof_idx, _ = self.robot.find_joints(self.cfg.wheel_dof_name) #1、2、3、4、5、6
+ 
         self.joint_pos = self.robot.data.joint_pos
         self.dof_pos_lower_limits = self.robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
         self.dof_pos_upper_limits = self.robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)
         # self.pos_actions = torch.zeros((self.num_envs, len(self._body_dof_idx)), device=self.device)
 
         self.dt = self.cfg.sim.dt * self.cfg.decimation
+
+        #### 测试语句 ####
+        # print(f"DEBUG: left DOF Indices: {self._left_wheel_dof_idx}")
+        # print(f"DEBUG: right DOF Indices: {self._right_wheel_dof_idx}")
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg) #机器人为Articulation类型，传入配置参数
@@ -49,12 +52,12 @@ class ExcavatorPpoEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        #################创建指令向量（目标值）##################
+        ################# 创建指令向量（目标值）##################
         self.commands = torch.randn((self.cfg.scene.num_envs, 3)).to(device=self.device) #初始随机指令——世界坐标系
         self.commands[:, -1] = 0.0
         cmd_norm = torch.linalg.norm(self.commands, dim=1, keepdim=True).clamp_min(1e-6)
         self.commands = self.commands / cmd_norm
-        #####################################################
+        ######################################################
 
         #####################创建可视化标记#####################
         self.visualization_markers = define_markers()
@@ -95,8 +98,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         vel_actions = actions.clone() * self.cfg.action_scale
         left_wheel_vel = vel_actions[:, 0]   # 左侧履带速度
         right_wheel_vel = vel_actions[:, 1]  # 右侧履带速度
-        
-        # 应用到所有轮子 - 履带式控制
+
         self.vel_actions = torch.zeros((self.num_envs, self.num_wheel_dof), device=self.device)
         self.vel_actions[:, 0] = left_wheel_vel      # left_wheel_joint
         self.vel_actions[:, 1] = left_wheel_vel      # left_front_wheel_joint  
@@ -105,11 +107,14 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.vel_actions[:, 4] = right_wheel_vel     # right_front_wheel_joint
         self.vel_actions[:, 5] = right_wheel_vel     # right_behind_wheel_joint
 
+        self.pos_actions = torch.zeros((self.num_envs, self.num_body_dof), device=self.device)
+        self.pos_actions[:, :] = 0
+
         self._visualize_markers()
 
     #应用动作，更新的数据应用于物理模拟，为指定关节设置期望目标值
     def _apply_action(self) -> None:
-        # self.robot.set_joint_position_target(self.pos_actions, joint_ids=self._body_dof_idx) #设置目标位置
+        self.robot.set_joint_position_target(self.pos_actions, joint_ids=self._body_dof_idx) #设置目标位置
         self.robot.set_joint_velocity_target(self.vel_actions, joint_ids=self._wheel_dof_idx) #设置目标速度
 
     #获取观测
@@ -128,7 +133,9 @@ class ExcavatorPpoEnv(DirectRLEnv):
         obs = torch.hstack((
             self.robot_lin_vel,
             normalized_yaw_error,
-            commands_body[:, :2] # 目标方向在机器人坐标系中的xy分量 [2维]
+            commands_body[:, :2], # 目标方向在机器人坐标系中的xy分量 [2维]
+            self.robot.data.joint_vel[:, self._wheel_dof_idx], #轮子速度 6维
+            self.robot.data.joint_pos[:, self._body_dof_idx], #身体关节位置 4维
         ))
         
         observations = {"policy": obs}
