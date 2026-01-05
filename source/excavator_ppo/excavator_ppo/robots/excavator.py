@@ -37,30 +37,30 @@ EXCAVATOR_CFG = ArticulationCfg(
     actuators = {
         "body_joint": ImplicitActuatorCfg(
             joint_names_expr=["body_yaw_joint"],
-            stiffness=10000.0, #位置控制的刚度（N·m/rad）
-            damping=1000.0, #阻尼（N·m·s/rad）
-            effort_limit_sim=30000.0, #最大力矩/力（N·m）
+            stiffness=100000.0, #位置控制的刚度（N·m/rad）
+            damping=10000.0, #阻尼（N·m·s/rad）
+            effort_limit_sim=500000.0, #最大力矩/力（N·m）
             velocity_limit_sim=2.0, #rad/s
         ),
         "boom_joint": ImplicitActuatorCfg(
             joint_names_expr=["boom_pitch_joint"],
-            stiffness=80000.0,
-            damping=8000.0,
-            effort_limit_sim=120000.0,
+            stiffness=500000.0,
+            damping=50000.0,
+            effort_limit_sim=2000000.0,
             velocity_limit_sim=1.5,
         ),
         "forearm_joint": ImplicitActuatorCfg(
             joint_names_expr=["forearm_pitch_joint"],
-            stiffness=60000.0,
-            damping=6000.0,
-            effort_limit_sim=90000.0,
+            stiffness=400000.0,
+            damping=40000.0,
+            effort_limit_sim=1500000.0,
             velocity_limit_sim=1.8,
         ),
         "bucket_joint": ImplicitActuatorCfg(
             joint_names_expr=["bucket_pitch_joint"],
-            stiffness=40000.0,
-            damping=4000.0,
-            effort_limit_sim=60000.0,
+            stiffness=300000.0,
+            damping=30000.0,
+            effort_limit_sim=1000000.0,
             velocity_limit_sim=2.0,
         ),
         "wheel_joints": ImplicitActuatorCfg(

@@ -32,13 +32,19 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.joint_pos = self.robot.data.joint_pos
         self.dof_pos_lower_limits = self.robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
         self.dof_pos_upper_limits = self.robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)
-        # self.pos_actions = torch.zeros((self.num_envs, len(self._body_dof_idx)), device=self.device)
+        self.pos_actions = self.robot.data.default_joint_pos[:, self._body_dof_idx].clone()
 
         self.dt = self.cfg.sim.dt * self.cfg.decimation
 
         #### 测试语句 ####
-        # print(f"DEBUG: left DOF Indices: {self._left_wheel_dof_idx}")
-        # print(f"DEBUG: right DOF Indices: {self._right_wheel_dof_idx}")
+        # print(f"DEBUG: Body DOF Indices: {self._body_dof_idx}")
+        # print(f"DEBUG: Wheel DOF Indices: {self._wheel_dof_idx}")
+        # print(f"DEBUG: Default joint pos shape: {self.robot.data.default_joint_pos.shape}")
+        # print(f"DEBUG: Body default positions: {self.robot.data.default_joint_pos[0, self._body_dof_idx]}")
+        # print(f"DEBUG: Initialized pos_actions: {self.pos_actions[0]}")
+        # print(f"DEBUG: Body DOF names: {self.cfg.body_dof_name}")
+        # print(f"DEBUG: DOF lower limits (body): {self.dof_pos_lower_limits[self._body_dof_idx]}")
+        # print(f"DEBUG: DOF upper limits (body): {self.dof_pos_upper_limits[self._body_dof_idx]}")
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg) #机器人为Articulation类型，传入配置参数
@@ -95,7 +101,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # self.pos_actions = torch.clamp(body_pos_actions, self.dof_pos_lower_limits[self._body_dof_idx], self.dof_pos_upper_limits[self._body_dof_idx])
         # self.vel_actions = self.actions[:, self._wheel_dof_idx]
 
-        vel_actions = actions.clone() * self.cfg.action_scale
+        vel_actions = actions[:, :2].clone() * self.cfg.action_scale
         left_wheel_vel = vel_actions[:, 0]   # 左侧履带速度
         right_wheel_vel = vel_actions[:, 1]  # 右侧履带速度
 
@@ -107,8 +113,26 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.vel_actions[:, 4] = right_wheel_vel     # right_front_wheel_joint
         self.vel_actions[:, 5] = right_wheel_vel     # right_behind_wheel_joint
 
-        self.pos_actions = torch.zeros((self.num_envs, self.num_body_dof), device=self.device)
-        self.pos_actions[:, :] = 0
+        arm_actions = actions[:, 2:5].clone()  # 提取机械臂动作
+        
+        # 使用增量控制：基于当前位置进行小幅调整
+        arm_dof_idx = self._body_dof_idx[1:]  # 跳过body_yaw_joint，只控制boom, forearm, bucket
+        current_arm_pos = self.robot.data.joint_pos[:, arm_dof_idx]
+        
+        # 增量式更新位置
+        arm_pos_delta = arm_actions * self.dt * self.cfg.position_action_scale
+        new_arm_pos = current_arm_pos + arm_pos_delta
+        
+        # 限制在关节范围内
+        new_arm_pos = torch.clamp(
+            new_arm_pos,
+            self.dof_pos_lower_limits[arm_dof_idx],
+            self.dof_pos_upper_limits[arm_dof_idx]
+        )
+        
+        # 更新完整的body位置目标（包括body_yaw保持默认位置）
+        self.pos_actions = self.robot.data.default_joint_pos[:, self._body_dof_idx].clone()
+        self.pos_actions[:, 1:] = new_arm_pos  # 更新机械臂部分
 
         self._visualize_markers()
 
@@ -119,23 +143,34 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
     #获取观测
     def _get_observations(self) -> dict:
-        self.robot_lin_vel = self.robot.data.root_com_lin_vel_w
-        self.robot_ang_vel = self.robot.data.root_com_ang_vel_w
+        self.robot_lin_vel = self.robot.data.root_com_lin_vel_b
+        self.robot_ang_vel = self.robot.data.root_com_ang_vel_b  # 角速度
         
         self.forwards = math_utils.quat_apply(self.robot.data.root_quat_w, self.robot.data.FORWARD_VEC_B)
         dot = torch.sum(self.forwards * self.commands, dim=-1, keepdim=True)
         cross = torch.cross(self.forwards, self.commands, dim=-1)[:,-1].reshape(-1,1)
         yaw_error = torch.atan2(cross, dot)
-        normalized_yaw_error = yaw_error / math.pi
-
-        commands_body = math_utils.quat_apply_inverse(self.robot.data.root_quat_w, self.commands)
+        
+        # 提取俯仰角和俯仰角速度（用于平衡控制）
+        # 从四元数提取俯仰角
+        quat = self.robot.data.root_quat_w  # [w, x, y, z]
+        pitch = torch.atan2(
+            2.0 * (quat[:, 0] * quat[:, 2] + quat[:, 3] * quat[:, 1]),
+            1.0 - 2.0 * (quat[:, 1]**2 + quat[:, 2]**2)
+        ).unsqueeze(-1)
+        pitch_rate = self.robot_ang_vel[:, 1:2]  # y轴角速度（俯仰率）
+        
+        # 获取机械臂关节位置（用于观测当前姿态）
+        arm_dof_idx = self._body_dof_idx[1:]  # boom, forearm, bucket
+        arm_pos = self.robot.data.joint_pos[:, arm_dof_idx]
         
         obs = torch.hstack((
-            self.robot_lin_vel,
-            normalized_yaw_error,
-            commands_body[:, :2], # 目标方向在机器人坐标系中的xy分量 [2维]
-            self.robot.data.joint_vel[:, self._wheel_dof_idx], #轮子速度 6维
-            self.robot.data.joint_pos[:, self._body_dof_idx], #身体关节位置 4维
+            self.robot_lin_vel[:, :2],  # xy平面线速度 [2维]
+            dot,                         # 朝向与目标的点积 [1维]
+            cross,                       # 朝向与目标的叉积 [1维]
+            pitch,                       # 俯仰角 [1维]
+            pitch_rate,                  # 俯仰角速度 [1维]
+            arm_pos,                     # 机械臂3个关节位置 [3维]
         ))
         
         observations = {"policy": obs}
@@ -148,10 +183,35 @@ class ExcavatorPpoEnv(DirectRLEnv):
         yaw_error = torch.atan2(cross, dot)  # 偏航误差，范围[-π, π]
         yaw_reward = torch.exp(-3.0 * torch.abs(yaw_error)).squeeze(-1)
 
-        forward_velocity = torch.sum(self.robot.data.root_lin_vel_w[:, :2] * self.commands[:, :2], dim=-1) #在命令方向的速度投影
-        forward_reward = torch.clamp(forward_velocity, 0.0, 2.0) * 0.5
+        forward_velocity = torch.sum(self.robot.data.root_lin_vel_w[:, :2] * self.commands[:, :2], dim=-1)
+        velocity_reward = torch.clamp(forward_velocity, 0, 1.0)
 
-        total_reward = yaw_reward
+        # 平衡奖励：惩罚俯仰角偏离水平面
+        quat = self.robot.data.root_quat_w
+        pitch = torch.atan2(
+            2.0 * (quat[:, 0] * quat[:, 2] + quat[:, 3] * quat[:, 1]),
+            1.0 - 2.0 * (quat[:, 1]**2 + quat[:, 2]**2)
+        )
+        # 目标俯仰角为0（水平），惩罚偏离
+        pitch_penalty = -2.0 * torch.abs(pitch)
+        
+        # 俯仰角速度惩罚：惩罚快速俯仰变化（抖动）
+        pitch_rate = self.robot.data.root_com_ang_vel_b[:, 1]
+        pitch_rate_penalty = -0.5 * torch.abs(pitch_rate)
+        
+        # 机械臂动作平滑性奖励：惩罚过大的关节位置变化
+        arm_dof_idx = self._body_dof_idx[1:]
+        arm_pos = self.robot.data.joint_pos[:, arm_dof_idx]
+        default_arm_pos = self.robot.data.default_joint_pos[:, arm_dof_idx]
+        arm_deviation = torch.sum(torch.abs(arm_pos - default_arm_pos), dim=-1)
+        arm_penalty = -0.1 * arm_deviation
+
+        total_reward = (
+            yaw_reward * (velocity_reward + 1.0) +  # 原有的方向和速度奖励
+            pitch_penalty +                          # 俯仰角平衡奖励
+            pitch_rate_penalty +                     # 俯仰稳定性奖励
+            arm_penalty                              # 机械臂平滑性奖励
+        )
         
         return total_reward
 
@@ -168,11 +228,12 @@ class ExcavatorPpoEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids) #调用父类的重置方法
 
-        #重置指令向量和可视化标记
-        self.commands = torch.randn((self.cfg.scene.num_envs, 3)).to(device=self.device) #初始随机指令——世界坐标系
-        self.commands[:,-1] = 0.0
-        self.commands = self.commands/torch.linalg.norm(self.commands, dim=1, keepdim=True) #归一化
-        self.yaws = torch.atan2(self.commands[:, 1], self.commands[:, 0]).unsqueeze(1)
+        #重置指令向量和可视化标记（只重置需要重置的环境）
+        new_commands = torch.randn((len(env_ids), 3), device=self.device) #为需要重置的环境生成新指令
+        new_commands[:, -1] = 0.0
+        new_commands = new_commands / torch.linalg.norm(new_commands, dim=1, keepdim=True) #归一化
+        self.commands[env_ids] = new_commands
+        self.yaws[env_ids] = torch.atan2(new_commands[:, 1], new_commands[:, 0]).unsqueeze(1)
         self._visualize_markers()
 
         #重置环境参数流程：获取默认初始状态 -> 调整位置到环境原点 -> 写入模拟器

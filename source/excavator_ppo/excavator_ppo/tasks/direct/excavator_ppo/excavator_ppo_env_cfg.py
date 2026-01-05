@@ -13,8 +13,8 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     episode_length_s = 20.0
 
     # - spaces definition
-    action_space = 2
-    observation_space = 16
+    action_space = 5  # 左侧履带速度 + 右侧履带速度 + 机械臂3个关节位置控制(boom, forearm, bucket)
+    observation_space = 7  # xy线速度(2) + dot(1) + cross(1) + 俯仰角(1) + 俯仰角速度(1) + 机械臂关节位置(3)
     state_space = 0
 
     # simulation
@@ -31,5 +31,5 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     right_wheel_dof_name = ["right_wheel_joint", "right_front_wheel_joint", "right_behind_wheel_joint"] #4、5、6
     
     # initial_angle_range = [0.0, 0.25]
-    position_action_scale = 2.3
-    action_scale = 7.5  # 增加动力，确保挖掘机能够移动和转向
+    position_action_scale = 1.5  # 机械臂位置控制缩放
+    action_scale = 1.0  # 履带速度控制缩放
