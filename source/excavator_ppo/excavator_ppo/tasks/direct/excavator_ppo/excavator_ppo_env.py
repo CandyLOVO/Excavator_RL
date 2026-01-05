@@ -114,16 +114,10 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.vel_actions[:, 5] = right_wheel_vel     # right_behind_wheel_joint
 
         arm_actions = actions[:, 2:5].clone()  # 提取机械臂动作
-        
-        # 使用增量控制：基于当前位置进行小幅调整
         arm_dof_idx = self._body_dof_idx[1:]  # 跳过body_yaw_joint，只控制boom, forearm, bucket
-        current_arm_pos = self.robot.data.joint_pos[:, arm_dof_idx]
-        
-        # 增量式更新位置
+        current_arm_pos = self.robot.data.joint_pos[:, arm_dof_idx] #获取当前机械臂关节位置
         arm_pos_delta = arm_actions * self.dt * self.cfg.position_action_scale
         new_arm_pos = current_arm_pos + arm_pos_delta
-        
-        # 限制在关节范围内
         new_arm_pos = torch.clamp(
             new_arm_pos,
             self.dof_pos_lower_limits[arm_dof_idx],
@@ -131,8 +125,8 @@ class ExcavatorPpoEnv(DirectRLEnv):
         )
         
         # 更新完整的body位置目标（包括body_yaw保持默认位置）
-        self.pos_actions = self.robot.data.default_joint_pos[:, self._body_dof_idx].clone()
-        self.pos_actions[:, 1:] = new_arm_pos  # 更新机械臂部分
+        self.pos_actions = self.robot.data.default_joint_pos[:, self._body_dof_idx].clone() # 重置为默认位置
+        self.pos_actions[:, 1:] = new_arm_pos  # 更新数据
 
         self._visualize_markers()
 
@@ -149,16 +143,10 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.forwards = math_utils.quat_apply(self.robot.data.root_quat_w, self.robot.data.FORWARD_VEC_B)
         dot = torch.sum(self.forwards * self.commands, dim=-1, keepdim=True)
         cross = torch.cross(self.forwards, self.commands, dim=-1)[:,-1].reshape(-1,1)
-        yaw_error = torch.atan2(cross, dot)
         
-        # 提取俯仰角和俯仰角速度（用于平衡控制）
-        # 从四元数提取俯仰角
-        quat = self.robot.data.root_quat_w  # [w, x, y, z]
-        pitch = torch.atan2(
-            2.0 * (quat[:, 0] * quat[:, 2] + quat[:, 3] * quat[:, 1]),
-            1.0 - 2.0 * (quat[:, 1]**2 + quat[:, 2]**2)
-        ).unsqueeze(-1)
-        pitch_rate = self.robot_ang_vel[:, 1:2]  # y轴角速度（俯仰率）
+        # 重力向量在本体坐标系下的投影（用于检测底盘倾斜）
+        gravity_world = torch.tensor([0.0, 0.0, -1.0], device=self.device).repeat(self.num_envs, 1)
+        self.gravity_body = math_utils.quat_apply_inverse(self.robot.data.root_quat_w, gravity_world)
         
         # 获取机械臂关节位置（用于观测当前姿态）
         arm_dof_idx = self._body_dof_idx[1:]  # boom, forearm, bucket
@@ -168,8 +156,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
             self.robot_lin_vel[:, :2],  # xy平面线速度 [2维]
             dot,                         # 朝向与目标的点积 [1维]
             cross,                       # 朝向与目标的叉积 [1维]
-            pitch,                       # 俯仰角 [1维]
-            pitch_rate,                  # 俯仰角速度 [1维]
+            self.gravity_body[:, :2],   # 重力在本体坐标系xy平面的投影 [2维] - 反映倾斜程度
             arm_pos,                     # 机械臂3个关节位置 [3维]
         ))
         
@@ -186,31 +173,18 @@ class ExcavatorPpoEnv(DirectRLEnv):
         forward_velocity = torch.sum(self.robot.data.root_lin_vel_w[:, :2] * self.commands[:, :2], dim=-1)
         velocity_reward = torch.clamp(forward_velocity, 0, 1.0)
 
-        # 平衡奖励：惩罚俯仰角偏离水平面
-        quat = self.robot.data.root_quat_w
-        pitch = torch.atan2(
-            2.0 * (quat[:, 0] * quat[:, 2] + quat[:, 3] * quat[:, 1]),
-            1.0 - 2.0 * (quat[:, 1]**2 + quat[:, 2]**2)
-        )
-        # 目标俯仰角为0（水平），惩罚偏离
-        pitch_penalty = -2.0 * torch.abs(pitch)
+        # 底盘平衡奖励：使用重力向量在本体坐标系下的投影，当底盘完全水平时，重力在本体坐标系中应该是 (0, 0, -1)
+        gravity_xy_norm = torch.norm(self.gravity_body[:, :2], dim=-1)  # xy平面投影的模长
+        tilt_penalty = -3.0 * gravity_xy_norm
         
-        # 俯仰角速度惩罚：惩罚快速俯仰变化（抖动）
-        pitch_rate = self.robot.data.root_com_ang_vel_b[:, 1]
-        pitch_rate_penalty = -0.5 * torch.abs(pitch_rate)
-        
-        # 机械臂动作平滑性奖励：惩罚过大的关节位置变化
-        arm_dof_idx = self._body_dof_idx[1:]
-        arm_pos = self.robot.data.joint_pos[:, arm_dof_idx]
-        default_arm_pos = self.robot.data.default_joint_pos[:, arm_dof_idx]
-        arm_deviation = torch.sum(torch.abs(arm_pos - default_arm_pos), dim=-1)
-        arm_penalty = -0.1 * arm_deviation
+        # 额外检查z分量（理想情况下应该接近-1）
+        gravity_z_error = torch.abs(self.gravity_body[:, 2] + 1.0)  # 与-1的偏差
+        upright_penalty = -1.0 * gravity_z_error
 
         total_reward = (
-            yaw_reward * (velocity_reward + 1.0) +  # 原有的方向和速度奖励
-            pitch_penalty +                          # 俯仰角平衡奖励
-            pitch_rate_penalty +                     # 俯仰稳定性奖励
-            arm_penalty                              # 机械臂平滑性奖励
+            yaw_reward * (0.5 * velocity_reward + 1.0) +  # 原有的方向和速度奖励
+            tilt_penalty +                          # 底盘倾斜惩罚（主要）
+            upright_penalty                         # 底盘竖直方向偏差惩罚
         )
         
         return total_reward
