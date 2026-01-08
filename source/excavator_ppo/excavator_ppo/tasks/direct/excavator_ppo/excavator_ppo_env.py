@@ -170,21 +170,24 @@ class ExcavatorPpoEnv(DirectRLEnv):
         yaw_error = torch.atan2(cross, dot)  # 偏航误差，范围[-π, π]
         yaw_reward = torch.exp(-3.0 * torch.abs(yaw_error)).squeeze(-1)
 
-        forward_velocity = torch.sum(self.robot.data.root_lin_vel_w[:, :2] * self.commands[:, :2], dim=-1)
-        velocity_reward = torch.clamp(forward_velocity, 0, 1.0)
+        forward_velocity = torch.sum(self.robot.data.root_lin_vel_b[:, :2] * self.commands[:, :2], dim=-1)
+        heading_alignment = torch.sum(self.forwards[:, :2] * self.commands[:, :2], dim=-1)
+        velocity_reward = torch.clamp(forward_velocity, 0, 1.0) * torch.clamp(heading_alignment, 0, 1)
 
-        # 底盘平衡奖励：使用重力向量在本体坐标系下的投影，当底盘完全水平时，重力在本体坐标系中应该是 (0, 0, -1)
-        gravity_xy_norm = torch.norm(self.gravity_body[:, :2], dim=-1)  # xy平面投影的模长
-        tilt_penalty = -3.0 * gravity_xy_norm
+        pitch_tilt = torch.abs(self.gravity_body[:, 0])  # pitch方向倾斜
+        roll_tilt = torch.abs(self.gravity_body[:, 1])   # roll方向倾斜
+        pitch_penalty = -1.0 * pitch_tilt  # 惩罚前后倾
+        roll_penalty = -2.0 * roll_tilt    # 惩罚左右倾
         
         # 额外检查z分量（理想情况下应该接近-1）
-        gravity_z_error = torch.abs(self.gravity_body[:, 2] + 1.0)  # 与-1的偏差
+        gravity_z_error = torch.abs(self.gravity_body[:, 2] + 1.0)
         upright_penalty = -1.0 * gravity_z_error
 
         total_reward = (
-            yaw_reward * (0.5 * velocity_reward + 1.0) +  # 原有的方向和速度奖励
-            tilt_penalty +                          # 底盘倾斜惩罚（主要）
-            upright_penalty                         # 底盘竖直方向偏差惩罚
+            yaw_reward * (2 * velocity_reward + 1.0) + 
+            pitch_penalty +                         # 前后倾惩罚
+            roll_penalty +                          # 左右倾惩罚
+            upright_penalty                         # 竖直方向偏差惩罚
         )
         
         return total_reward
