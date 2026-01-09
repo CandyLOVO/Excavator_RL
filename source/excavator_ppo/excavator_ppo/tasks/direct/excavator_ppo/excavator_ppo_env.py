@@ -58,6 +58,12 @@ class ExcavatorPpoEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
+        ##################### 创建指地形 ######################
+        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
+        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
+        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
+        ######################################################
+        
         ################# 创建指令向量（目标值）##################
         self.commands = torch.randn((self.cfg.scene.num_envs, 3)).to(device=self.device) #初始随机指令——世界坐标系
         self.commands[:, -1] = 0.0
@@ -69,7 +75,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.visualization_markers = define_markers()
         self.marker_locations = torch.zeros((self.cfg.scene.num_envs, 3)).to(device=self.device) #标记位置
         self.marker_offset = torch.zeros((self.cfg.scene.num_envs, 3)).to(device=self.device) #标记偏移量
-        self.marker_offset[:, -1] = 3.0 #标记在Z轴上方2米
+        self.marker_offset[:, -1] = 3.0 #标记在Z轴上方3米
         self.forward_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4)).to(device=self.device) #底盘朝向标记四元数
         self.command_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4)).to(device=self.device) #指令朝向标记四元数
         ######################################################
@@ -220,6 +226,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         default_root_state = self.robot.data.default_root_state[env_ids] #获取默认根状态
         default_root_state[:, :3] += self.scene.env_origins[env_ids] #将根位置调整到各自环境的原点
+        # default_root_state[:, :3] += self._terrain.env_origins[env_ids]
         self.robot.write_root_state_to_sim(default_root_state, env_ids) #写入关节位置和速度
 
 def define_markers() -> VisualizationMarkers:
