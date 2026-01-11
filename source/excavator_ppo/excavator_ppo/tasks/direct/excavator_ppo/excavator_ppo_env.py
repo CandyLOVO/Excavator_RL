@@ -174,7 +174,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         dot = torch.sum(self.forwards * self.commands, dim=-1, keepdim=True)
         cross = torch.cross(self.forwards, self.commands, dim=-1)[:,-1].reshape(-1,1) 
         yaw_error = torch.atan2(cross, dot)  # 偏航误差，范围[-π, π]
-        yaw_reward = torch.exp(-3.0 * torch.abs(yaw_error)).squeeze(-1)
+        yaw_reward = torch.exp(-5.0 * torch.abs(yaw_error)).squeeze(-1)
 
         forward_velocity = torch.sum(self.robot.data.root_lin_vel_b[:, :2] * self.commands[:, :2], dim=-1)
         heading_alignment = torch.sum(self.forwards[:, :2] * self.commands[:, :2], dim=-1)
@@ -182,21 +182,17 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         pitch_tilt = torch.abs(self.gravity_body[:, 0])  # pitch方向倾斜
         roll_tilt = torch.abs(self.gravity_body[:, 1])   # roll方向倾斜
-        pitch_penalty = -0.6 * pitch_tilt  # 惩罚前后倾，0.4时铲斗触地
+        pitch_penalty = -0.6 * pitch_tilt  # 惩罚前后倾
         roll_penalty = -0.6 * roll_tilt    # 惩罚左右倾
-        # tilt_magnitude = pitch_tilt + roll_tilt
-        # needs_stab = tilt_magnitude > 0.15  # 倾斜超过阈值需要稳定
-        # arm_penalty_stable = -0.5 * arm_extension      # 平稳时：中等惩罚，鼓励收回
-        # arm_penalty_unstable = -0.1 * arm_extension    # 不稳时：轻微惩罚，允许伸展
         
         # 额外检查z分量（理想情况下应该接近-1）
         gravity_z_error = torch.abs(self.gravity_body[:, 2] + 1.0)
         upright_penalty = -0.4 * gravity_z_error
 
         total_reward = (
-            yaw_reward * (4*velocity_reward + 1.0) + 
-            pitch_penalty +
-            roll_penalty
+            yaw_reward * (4*velocity_reward + 1.0)
+            + pitch_penalty
+            + roll_penalty
         )
         
         return total_reward
