@@ -182,18 +182,21 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         pitch_tilt = torch.abs(self.gravity_body[:, 0])  # pitch方向倾斜
         roll_tilt = torch.abs(self.gravity_body[:, 1])   # roll方向倾斜
-        pitch_penalty = -1.0 * pitch_tilt  # 惩罚前后倾
-        roll_penalty = -2.0 * roll_tilt    # 惩罚左右倾
+        pitch_penalty = -0.6 * pitch_tilt  # 惩罚前后倾，0.4时铲斗触地
+        roll_penalty = -0.6 * roll_tilt    # 惩罚左右倾
+        # tilt_magnitude = pitch_tilt + roll_tilt
+        # needs_stab = tilt_magnitude > 0.15  # 倾斜超过阈值需要稳定
+        # arm_penalty_stable = -0.5 * arm_extension      # 平稳时：中等惩罚，鼓励收回
+        # arm_penalty_unstable = -0.1 * arm_extension    # 不稳时：轻微惩罚，允许伸展
         
         # 额外检查z分量（理想情况下应该接近-1）
         gravity_z_error = torch.abs(self.gravity_body[:, 2] + 1.0)
-        upright_penalty = -1.0 * gravity_z_error
+        upright_penalty = -0.4 * gravity_z_error
 
         total_reward = (
-            yaw_reward * (2 * velocity_reward + 1.0) + 
-            pitch_penalty +                         # 前后倾惩罚
-            roll_penalty +                          # 左右倾惩罚
-            upright_penalty                         # 竖直方向偏差惩罚
+            yaw_reward * (4*velocity_reward + 1.0) + 
+            pitch_penalty +
+            roll_penalty
         )
         
         return total_reward
