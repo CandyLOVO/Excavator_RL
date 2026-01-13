@@ -112,27 +112,19 @@ class ExcavatorPpoEnv(DirectRLEnv):
         right_wheel_vel = vel_actions[:, 1]  # 右侧履带速度
 
         self.vel_actions = torch.zeros((self.num_envs, self.num_wheel_dof), device=self.device)
-        self.vel_actions[:, 0] = left_wheel_vel      # left_wheel_joint
-        self.vel_actions[:, 1] = left_wheel_vel      # left_front_wheel_joint  
-        self.vel_actions[:, 2] = left_wheel_vel      # left_behind_wheel_joint
-        self.vel_actions[:, 3] = right_wheel_vel     # right_wheel_joint
-        self.vel_actions[:, 4] = right_wheel_vel     # right_front_wheel_joint
-        self.vel_actions[:, 5] = right_wheel_vel     # right_behind_wheel_joint
+        self.vel_actions[:, 0:3] = left_wheel_vel.unsqueeze(1)
+        self.vel_actions[:, 3:6] = right_wheel_vel.unsqueeze(1)
 
-        arm_actions = actions[:, 2:5].clone()  # 提取机械臂动作
-        arm_dof_idx = self._body_dof_idx[1:]  # 跳过body_yaw_joint，只控制boom, forearm, bucket
-        current_arm_pos = self.robot.data.joint_pos[:, arm_dof_idx] #获取当前机械臂关节位置
-        arm_pos_delta = arm_actions * self.dt * self.cfg.position_action_scale
-        new_arm_pos = current_arm_pos + arm_pos_delta
-        new_arm_pos = torch.clamp(
-            new_arm_pos,
-            self.dof_pos_lower_limits[arm_dof_idx],
-            self.dof_pos_upper_limits[arm_dof_idx]
+        body_arm_actions = actions[:, 2:6].clone()
+        current_pos = self.robot.data.joint_pos[:, self._body_dof_idx]
+        scales = torch.tensor([self.cfg.body_yaw_scale, self.cfg.position_action_scale, self.cfg.position_action_scale, self.cfg.position_action_scale], device=self.device)
+        pos_delta = body_arm_actions * self.dt * scales
+        new_pos = current_pos + pos_delta
+        self.pos_actions = torch.clamp(
+            new_pos,
+            self.dof_pos_lower_limits[self._body_dof_idx],
+            self.dof_pos_upper_limits[self._body_dof_idx]
         )
-        
-        # 更新完整的body位置目标（包括body_yaw保持默认位置）
-        self.pos_actions = self.robot.data.default_joint_pos[:, self._body_dof_idx].clone() # 重置为默认位置
-        self.pos_actions[:, 1:] = new_arm_pos  # 更新数据
 
         self._visualize_markers()
 
@@ -154,16 +146,14 @@ class ExcavatorPpoEnv(DirectRLEnv):
         gravity_world = torch.tensor([0.0, 0.0, -1.0], device=self.device).repeat(self.num_envs, 1)
         self.gravity_body = math_utils.quat_apply_inverse(self.robot.data.root_quat_w, gravity_world)
         
-        # 获取机械臂关节位置（用于观测当前姿态）
-        arm_dof_idx = self._body_dof_idx[1:]  # boom, forearm, bucket
-        arm_pos = self.robot.data.joint_pos[:, arm_dof_idx]
-        
+        body_pos = self.robot.data.joint_pos[:, self._body_dof_idx]
+
         obs = torch.hstack((
-            self.robot_lin_vel[:, :2],  # xy平面线速度 [2维]
+            self.robot_lin_vel[:, :2],   # xy平面线速度 [2维]
             dot,                         # 朝向与目标的点积 [1维]
             cross,                       # 朝向与目标的叉积 [1维]
-            self.gravity_body[:, :2],   # 重力在本体坐标系xy平面的投影 [2维] - 反映倾斜程度
-            arm_pos,                     # 机械臂3个关节位置 [3维]
+            self.gravity_body[:, :2],    # 重力在本体坐标系xy平面的投影 [2维] - 反映倾斜程度
+            body_pos,                    # 机体4个关节位置 [4维]
         ))
         
         observations = {"policy": obs}
@@ -181,22 +171,26 @@ class ExcavatorPpoEnv(DirectRLEnv):
         velocity_reward = torch.clamp(forward_velocity, 0, 1.0) * torch.clamp(heading_alignment, 0, 1)
 
         robot_lin_vel_b = self.robot.data.root_com_lin_vel_b[:, 0]
-        backward_penalty = -0.5 * torch.clamp(robot_lin_vel_b, max=0.0).abs() #后退惩罚
+        backward_penalty = -0.8 * torch.clamp(robot_lin_vel_b, max=0.0).abs() #后退惩罚
 
         pitch_tilt = torch.abs(self.gravity_body[:, 0])  # pitch方向倾斜
         roll_tilt = torch.abs(self.gravity_body[:, 1])   # roll方向倾斜
-        pitch_penalty = -0.7 * pitch_tilt  # 惩罚前后倾
-        roll_penalty = -0.7 * roll_tilt    # 惩罚左右倾
+        pitch_penalty = -1.0 * pitch_tilt  # 惩罚前后倾
+        roll_penalty = -1.0 * roll_tilt    # 惩罚左右倾
+
+        body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
+        centering_penalty = -0.3 * torch.square(body_yaw) #鼓励身体朝向指令方向
         
         # 额外检查z分量（理想情况下应该接近-1）
-        gravity_z_error = torch.abs(self.gravity_body[:, 2] + 1.0)
-        upright_penalty = -0.4 * gravity_z_error
+        # gravity_z_error = torch.abs(self.gravity_body[:, 2] + 1.0)
+        # upright_penalty = -0.4 * gravity_z_error
 
         total_reward = (
             yaw_reward * (5.0*velocity_reward + 1.0)
             + backward_penalty
             + pitch_penalty
             + roll_penalty
+            + centering_penalty
         )
         
         return total_reward

@@ -18,8 +18,8 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     episode_length_s = 20.0
 
     # - spaces definition
-    action_space = 5  # 左侧履带速度 + 右侧履带速度 + 机械臂3个关节位置控制(boom, forearm, bucket)
-    observation_space = 9
+    action_space = 6 
+    observation_space = 10
     state_space = 0
 
     # simulation
@@ -66,4 +66,5 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     
     # initial_angle_range = [0.0, 0.25]
     position_action_scale = 1.5  # 机械臂位置控制缩放
+    body_yaw_scale = 1.0 # 身体旋转控制缩放
     action_scale = 1.5  # 履带速度控制缩放
