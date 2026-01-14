@@ -167,30 +167,33 @@ class ExcavatorPpoEnv(DirectRLEnv):
         yaw_reward = torch.exp(-3.0 * torch.abs(yaw_error)).squeeze(-1)
 
         forward_velocity = torch.sum(self.robot.data.root_lin_vel_b[:, :2] * self.commands[:, :2], dim=-1)
-        heading_alignment = torch.sum(self.forwards[:, :2] * self.commands[:, :2], dim=-1)
-        velocity_reward = torch.clamp(forward_velocity, 0, 1.0) * torch.clamp(heading_alignment, 0, 1)
+        velocity_reward = torch.tanh(forward_velocity) * torch.clamp(dot.squeeze(), min=0.0)
 
+        # robot_lin_vel_b = self.robot.data.root_com_lin_vel_b[:, 0]
+        # backward_penalty = -torch.tanh(torch.clamp(-robot_lin_vel_b, min=0.0)) #后退惩罚
         robot_lin_vel_b = self.robot.data.root_com_lin_vel_b[:, 0]
-        backward_penalty = -0.8 * torch.clamp(robot_lin_vel_b, max=0.0).abs() #后退惩罚
+        backward_penalty = -torch.clamp(robot_lin_vel_b, max=0.0).abs() #后退惩罚
 
         pitch_tilt = torch.abs(self.gravity_body[:, 0])  # pitch方向倾斜
         roll_tilt = torch.abs(self.gravity_body[:, 1])   # roll方向倾斜
-        pitch_penalty = -1.0 * pitch_tilt  # 惩罚前后倾
-        roll_penalty = -1.0 * roll_tilt    # 惩罚左右倾
+        pitch_penalty = -pitch_tilt  # 惩罚前后倾
+        roll_penalty = -roll_tilt    # 惩罚左右倾
+        # tilt_magnitude = torch.norm(self.gravity_body[:, :2], dim=1)
+        # tilt_penalty = -torch.tanh(tilt_magnitude)
 
+        # body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
+        # centering_penalty = -torch.abs(body_yaw) #惩罚身体不朝向指令方向
         body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
-        centering_penalty = -0.3 * torch.square(body_yaw) #鼓励身体朝向指令方向
-        
-        # 额外检查z分量（理想情况下应该接近-1）
-        # gravity_z_error = torch.abs(self.gravity_body[:, 2] + 1.0)
-        # upright_penalty = -0.4 * gravity_z_error
+        centering_penalty = -torch.square(body_yaw)
+        # body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
+        # centering_reward = torch.exp(-5.0 * torch.abs(body_yaw)) #鼓励身体朝向指令方向
 
         total_reward = (
-            yaw_reward * (5.0*velocity_reward + 1.0)
-            + backward_penalty
-            + pitch_penalty
-            + roll_penalty
-            + centering_penalty
+            1.0 * yaw_reward * (2.0 * velocity_reward + 1.0)
+            + 0.3 * backward_penalty
+            + 0.5 * pitch_penalty
+            + 0.5 * roll_penalty
+            + 1.0 * centering_penalty
         )
         
         return total_reward
