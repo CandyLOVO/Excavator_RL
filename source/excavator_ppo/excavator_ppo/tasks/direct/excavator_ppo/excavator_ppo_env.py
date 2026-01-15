@@ -168,6 +168,9 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         forward_velocity = torch.sum(self.robot.data.root_lin_vel_b[:, :2] * self.commands[:, :2], dim=-1)
         velocity_reward = torch.tanh(forward_velocity) * torch.clamp(dot.squeeze(), min=0.0)
+        # forward_velocity = torch.sum(self.robot.data.root_lin_vel_b[:, :2] * self.commands[:, :2], dim=-1)
+        # heading_alignment = torch.sum(self.forwards[:, :2] * self.commands[:, :2], dim=-1)
+        # velocity_reward = torch.clamp(forward_velocity, 0, 1.0) * torch.clamp(heading_alignment, 0, 1) 
 
         # robot_lin_vel_b = self.robot.data.root_com_lin_vel_b[:, 0]
         # backward_penalty = -torch.tanh(torch.clamp(-robot_lin_vel_b, min=0.0)) #后退惩罚
@@ -189,7 +192,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # centering_reward = torch.exp(-5.0 * torch.abs(body_yaw)) #鼓励身体朝向指令方向
 
         total_reward = (
-            1.0 * yaw_reward * (2.0 * velocity_reward + 1.0)
+            1.0 * yaw_reward * (3.0 * velocity_reward + 1.0)
             + 0.3 * backward_penalty
             + 0.5 * pitch_penalty
             + 0.5 * roll_penalty
