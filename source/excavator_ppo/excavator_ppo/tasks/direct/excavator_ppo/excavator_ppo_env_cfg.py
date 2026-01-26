@@ -15,10 +15,10 @@ import isaaclab.sim as sim_utils
 class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 30.0
+    episode_length_s = 20.0
 
     # - spaces definition
-    action_space = 6 
+    action_space = 6
     observation_space = 10
     state_space = 0
 

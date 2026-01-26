@@ -115,16 +115,43 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.vel_actions[:, 0:3] = left_wheel_vel.unsqueeze(1)
         self.vel_actions[:, 3:6] = right_wheel_vel.unsqueeze(1)
 
-        body_arm_actions = actions[:, 2:6].clone()
-        current_pos = self.robot.data.joint_pos[:, self._body_dof_idx]
-        scales = torch.tensor([self.cfg.body_yaw_scale, self.cfg.position_action_scale, self.cfg.position_action_scale, self.cfg.position_action_scale], device=self.device)
-        pos_delta = body_arm_actions * self.dt * scales
-        new_pos = current_pos + pos_delta
-        self.pos_actions = torch.clamp(
-            new_pos,
-            self.dof_pos_lower_limits[self._body_dof_idx],
-            self.dof_pos_upper_limits[self._body_dof_idx]
+        # body_arm_actions = actions[:, 2:6].clone()
+        # current_pos = self.robot.data.joint_pos[:, self._body_dof_idx]
+        # scales = torch.tensor([self.cfg.body_yaw_scale, self.cfg.position_action_scale, self.cfg.position_action_scale, self.cfg.position_action_scale], device=self.device)
+        # pos_delta = body_arm_actions * self.dt * scales
+        # new_pos = current_pos + pos_delta
+        # self.pos_actions = torch.clamp(
+        #     new_pos,
+        #     self.dof_pos_lower_limits[self._body_dof_idx],
+        #     self.dof_pos_upper_limits[self._body_dof_idx]
+        # )
+
+        arm_actions = actions[:, 2:5].clone()  # 提取机械臂动作
+        arm_dof_idx = self._body_dof_idx[1:]  # 跳过body_yaw_joint，只控制boom, forearm, bucket
+        current_arm_pos = self.robot.data.joint_pos[:, arm_dof_idx] #获取当前机械臂关节位置  
+        arm_pos_delta = arm_actions * self.dt * self.cfg.position_action_scale
+        new_arm_pos = current_arm_pos + arm_pos_delta
+        new_arm_pos = torch.clamp(
+            new_arm_pos,
+            self.dof_pos_lower_limits[arm_dof_idx],
+            self.dof_pos_upper_limits[arm_dof_idx]
         )
+
+        body_actions = actions[:, 5].clone()  # 提取车体偏航动作
+        body_dof_idx = self._body_dof_idx[0]  # 仅body_yaw_joint索引
+        current_body_pos = self.robot.data.joint_pos[:, body_dof_idx] #获取当前车体偏航位置
+        body_pos_delta = body_actions * self.dt * self.cfg.body_yaw_scale
+        new_body_pos = current_body_pos + body_pos_delta
+        new_body_pos = torch.clamp(
+            new_body_pos,
+            self.dof_pos_lower_limits[body_dof_idx],
+            self.dof_pos_upper_limits[body_dof_idx]
+        )
+        
+        # 更新完整的body位置目标（包括body_yaw保持默认位置）
+        self.pos_actions = self.robot.data.default_joint_pos[:, self._body_dof_idx].clone() # 重置为默认位置
+        self.pos_actions[:, 1:] = new_arm_pos  # 更新数据
+        self.pos_actions[:, 0] = new_body_pos  # 更新数据
 
         self._visualize_markers()
 
@@ -135,6 +162,27 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
     #获取观测
     def _get_observations(self) -> dict:
+        # self.robot_lin_vel = self.robot.data.root_com_lin_vel_b
+        # self.robot_ang_vel = self.robot.data.root_com_ang_vel_b  # 角速度
+        
+        # self.forwards = math_utils.quat_apply(self.robot.data.root_quat_w, self.robot.data.FORWARD_VEC_B)
+        # dot = torch.sum(self.forwards * self.commands, dim=-1, keepdim=True)
+        # cross = torch.cross(self.forwards, self.commands, dim=-1)[:,-1].reshape(-1,1)
+        
+        # # 重力向量在本体坐标系下的投影（用于检测底盘倾斜）
+        # gravity_world = torch.tensor([0.0, 0.0, -1.0], device=self.device).repeat(self.num_envs, 1)
+        # self.gravity_body = math_utils.quat_apply_inverse(self.robot.data.root_quat_w, gravity_world)
+        
+        # body_pos = self.robot.data.joint_pos[:, self._body_dof_idx]
+
+        # obs = torch.hstack((
+        #     self.robot_lin_vel[:, :2],   # xy平面线速度 [2维]
+        #     dot,                         # 朝向与目标的点积 [1维]
+        #     cross,                       # 朝向与目标的叉积 [1维]
+        #     self.gravity_body[:, :2],    # 重力在本体坐标系xy平面的投影 [2维] - 反映倾斜程度
+        #     body_pos,                    # 机体4个关节位置 [4维]
+        # ))
+
         self.robot_lin_vel = self.robot.data.root_com_lin_vel_b
         self.robot_ang_vel = self.robot.data.root_com_ang_vel_b  # 角速度
         
@@ -145,15 +193,15 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # 重力向量在本体坐标系下的投影（用于检测底盘倾斜）
         gravity_world = torch.tensor([0.0, 0.0, -1.0], device=self.device).repeat(self.num_envs, 1)
         self.gravity_body = math_utils.quat_apply_inverse(self.robot.data.root_quat_w, gravity_world)
-        
-        body_pos = self.robot.data.joint_pos[:, self._body_dof_idx]
 
+        body_pos = self.robot.data.joint_pos[:, self._body_dof_idx]
+        
         obs = torch.hstack((
-            self.robot_lin_vel[:, :2],   # xy平面线速度 [2维]
-            dot,                         # 朝向与目标的点积 [1维]
-            cross,                       # 朝向与目标的叉积 [1维]
-            self.gravity_body[:, :2],    # 重力在本体坐标系xy平面的投影 [2维] - 反映倾斜程度
-            body_pos,                    # 机体4个关节位置 [4维]
+            self.robot_lin_vel[:, :2],  # xy平面线速度 [2维]
+            dot,                        # 朝向与目标的点积 [1维]
+            cross,                      # 朝向与目标的叉积 [1维]
+            self.gravity_body[:, :2],   # 重力在本体坐标系xy平面的投影 [2维] - 反映倾斜程度
+            body_pos,                   # [4维]
         ))
         
         observations = {"policy": obs}
@@ -161,42 +209,61 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
     #获取奖励，计算函数compute_rewards见最后
     def _get_rewards(self) -> torch.Tensor:    
+        # dot = torch.sum(self.forwards * self.commands, dim=-1, keepdim=True)
+        # cross = torch.cross(self.forwards, self.commands, dim=-1)[:,-1].reshape(-1,1) 
+        # yaw_error = torch.atan2(cross, dot)  # 偏航误差，范围[-π, π]
+        # yaw_reward = torch.exp(-3.0 * torch.abs(yaw_error)).squeeze(-1)
+
+        # forward_velocity = torch.sum(self.robot.data.root_lin_vel_b[:, :2] * self.commands[:, :2], dim=-1)
+        # velocity_reward = torch.tanh(forward_velocity) * torch.clamp(dot.squeeze(), min=0.0)
+
+        # # robot_lin_vel_b = self.robot.data.root_com_lin_vel_b[:, 0]
+        # # backward_penalty = -torch.tanh(torch.clamp(-robot_lin_vel_b, min=0.0)) #后退惩罚
+        # robot_lin_vel_b = self.robot.data.root_com_lin_vel_b[:, 0]
+        # backward_penalty = -torch.clamp(robot_lin_vel_b, max=0.0).abs() #后退惩罚
+
+        # pitch_tilt = torch.abs(self.gravity_body[:, 0])  # pitch方向倾斜
+        # roll_tilt = torch.abs(self.gravity_body[:, 1])   # roll方向倾斜
+        # pitch_penalty = -pitch_tilt  # 惩罚前后倾
+        # roll_penalty = -roll_tilt    # 惩罚左右倾
+
+        # # body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
+        # # centering_penalty = -torch.abs(body_yaw) #惩罚身体不朝向指令方向
+        # body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
+        # centering_penalty = -torch.square(body_yaw)
+        # # body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
+        # # centering_reward = torch.exp(-5.0 * torch.abs(body_yaw)) #鼓励身体朝向指令方向
+
+        # total_reward = (
+        #     1.0 * yaw_reward * (3.0 * velocity_reward + 1.0)
+        #     + 0.3 * backward_penalty
+        #     + 0.5 * pitch_penalty
+        #     + 0.5 * roll_penalty
+        #     + 1.0 * centering_penalty
+        # )
+
         dot = torch.sum(self.forwards * self.commands, dim=-1, keepdim=True)
         cross = torch.cross(self.forwards, self.commands, dim=-1)[:,-1].reshape(-1,1) 
         yaw_error = torch.atan2(cross, dot)  # 偏航误差，范围[-π, π]
         yaw_reward = torch.exp(-3.0 * torch.abs(yaw_error)).squeeze(-1)
 
         forward_velocity = torch.sum(self.robot.data.root_lin_vel_b[:, :2] * self.commands[:, :2], dim=-1)
-        velocity_reward = torch.tanh(forward_velocity) * torch.clamp(dot.squeeze(), min=0.0)
-        # forward_velocity = torch.sum(self.robot.data.root_lin_vel_b[:, :2] * self.commands[:, :2], dim=-1)
-        # heading_alignment = torch.sum(self.forwards[:, :2] * self.commands[:, :2], dim=-1)
-        # velocity_reward = torch.clamp(forward_velocity, 0, 1.0) * torch.clamp(heading_alignment, 0, 1) 
+        heading_alignment = torch.sum(self.forwards[:, :2] * self.commands[:, :2], dim=-1)
+        velocity_reward = torch.clamp(forward_velocity, 0, 1.0) * torch.clamp(heading_alignment, 0, 1)
 
-        # robot_lin_vel_b = self.robot.data.root_com_lin_vel_b[:, 0]
-        # backward_penalty = -torch.tanh(torch.clamp(-robot_lin_vel_b, min=0.0)) #后退惩罚
         robot_lin_vel_b = self.robot.data.root_com_lin_vel_b[:, 0]
-        backward_penalty = -torch.clamp(robot_lin_vel_b, max=0.0).abs() #后退惩罚
+        backward_penalty = -0.5 * torch.clamp(robot_lin_vel_b, max=0.0).abs() #后退惩罚
 
         pitch_tilt = torch.abs(self.gravity_body[:, 0])  # pitch方向倾斜
         roll_tilt = torch.abs(self.gravity_body[:, 1])   # roll方向倾斜
-        pitch_penalty = -pitch_tilt  # 惩罚前后倾
-        roll_penalty = -roll_tilt    # 惩罚左右倾
-        # tilt_magnitude = torch.norm(self.gravity_body[:, :2], dim=1)
-        # tilt_penalty = -torch.tanh(tilt_magnitude)
-
-        # body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
-        # centering_penalty = -torch.abs(body_yaw) #惩罚身体不朝向指令方向
-        body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
-        centering_penalty = -torch.square(body_yaw)
-        # body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
-        # centering_reward = torch.exp(-5.0 * torch.abs(body_yaw)) #鼓励身体朝向指令方向
+        pitch_penalty = -0.7 * pitch_tilt  # 惩罚前后倾
+        roll_penalty = -0.7 * roll_tilt    # 惩罚左右倾
 
         total_reward = (
-            1.0 * yaw_reward * (3.0 * velocity_reward + 1.0)
-            + 0.3 * backward_penalty
-            + 0.5 * pitch_penalty
-            + 0.5 * roll_penalty
-            + 1.0 * centering_penalty
+            yaw_reward * (5.0*velocity_reward + 1.0)
+            + backward_penalty
+            + pitch_penalty
+            + roll_penalty
         )
         
         return total_reward
