@@ -246,24 +246,35 @@ class ExcavatorPpoEnv(DirectRLEnv):
         cross = torch.cross(self.forwards, self.commands, dim=-1)[:,-1].reshape(-1,1) 
         yaw_error = torch.atan2(cross, dot)  # 偏航误差，范围[-π, π]
         yaw_reward = torch.exp(-3.0 * torch.abs(yaw_error)).squeeze(-1)
+        yaw_penalty = (-torch.exp(torch.abs(yaw_reward)) + 1.0).squeeze(-1)
 
         forward_velocity = torch.sum(self.robot.data.root_lin_vel_b[:, :2] * self.commands[:, :2], dim=-1)
         heading_alignment = torch.sum(self.forwards[:, :2] * self.commands[:, :2], dim=-1)
         velocity_reward = torch.clamp(forward_velocity, 0, 1.0) * torch.clamp(heading_alignment, 0, 1)
 
         robot_lin_vel_b = self.robot.data.root_com_lin_vel_b[:, 0]
-        backward_penalty = -0.5 * torch.clamp(robot_lin_vel_b, max=0.0).abs() #后退惩罚
+        backward_penalty = -torch.clamp(robot_lin_vel_b, max=0.0).abs() #后退惩罚
 
-        pitch_tilt = torch.abs(self.gravity_body[:, 0])  # pitch方向倾斜
+        pitch_tilt = torch.abs(self.gravity_body[:, 0])  # pitch方向倾斜 [0, 1.57]
         roll_tilt = torch.abs(self.gravity_body[:, 1])   # roll方向倾斜
-        pitch_penalty = -0.7 * pitch_tilt  # 惩罚前后倾
-        roll_penalty = -0.7 * roll_tilt    # 惩罚左右倾
+        pitch_penalty = -pitch_tilt  # 惩罚前后倾
+        roll_penalty = -roll_tilt    # 惩罚左右倾
+
+        body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]] #[0, 3.14]
+        centering_penalty = -torch.exp(torch.abs(body_yaw)) + 1.0
+        centering_reward = torch.exp(-5.0 * torch.abs(body_yaw))
+
 
         total_reward = (
-            yaw_reward * (5.0*velocity_reward + 1.0)
-            + backward_penalty
-            + pitch_penalty
-            + roll_penalty
+            # 1.0 * yaw_reward * (4.0*velocity_reward + 1.0)
+            2.0 * yaw_reward
+            + 1.0 * velocity_reward
+            + 0.4 * yaw_penalty
+            + 0.3 * backward_penalty
+            + 0.7 * pitch_penalty
+            + 0.7 * roll_penalty
+            + 0.4 * centering_penalty
+            + 0.2 * centering_reward
         )
         
         return total_reward
