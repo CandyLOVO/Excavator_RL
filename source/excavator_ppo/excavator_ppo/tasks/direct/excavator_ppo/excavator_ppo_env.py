@@ -245,12 +245,24 @@ class ExcavatorPpoEnv(DirectRLEnv):
         dot = torch.sum(self.forwards * self.commands, dim=-1, keepdim=True)
         cross = torch.cross(self.forwards, self.commands, dim=-1)[:,-1].reshape(-1,1) 
         yaw_error = torch.atan2(cross, dot)  # 偏航误差，范围[-π, π]
-        yaw_reward = torch.exp(-3.0 * torch.abs(yaw_error)).squeeze(-1)
-        yaw_penalty = (-torch.exp(torch.abs(yaw_reward)) + 1.0).squeeze(-1)
+        # yaw_reward = torch.exp(-1.0 * torch.abs(yaw_error)).squeeze(-1) #在误差接近180度时，停在原地，该附近的值极小且斜率极其平缓，不知道往哪边转
+        
+        abs_yaw_error = torch.abs(yaw_error).squeeze(-1)
+        yaw_reward = 1.0 - (abs_yaw_error / math.pi) #线性斜率
+
+        # yaw_reward_lin = 1.0 - (abs_yaw_error / math.pi)
+        # yaw_reward_exp = torch.exp(-10.0 * abs_yaw_error)
+        # yaw_reward = 0.7 * yaw_reward_lin + 0.3 * yaw_reward_exp
+
+
+        ang_vel_z = self.robot.data.root_ang_vel_b[:, 2]
+        turning_reward = torch.abs(ang_vel_z) * (1.0 - yaw_reward) # 越不对齐，转动奖励越高
+
+        yaw_penalty = (-torch.exp(torch.abs(yaw_error)) + 1.0).squeeze(-1)
 
         forward_velocity = torch.sum(self.robot.data.root_lin_vel_b[:, :2] * self.commands[:, :2], dim=-1)
         heading_alignment = torch.sum(self.forwards[:, :2] * self.commands[:, :2], dim=-1)
-        velocity_reward = torch.clamp(forward_velocity, 0, 1.0) * torch.clamp(heading_alignment, 0, 1)
+        velocity_reward = torch.clamp(forward_velocity, 0, 1.0) * torch.clamp(heading_alignment, 0)
 
         robot_lin_vel_b = self.robot.data.root_com_lin_vel_b[:, 0]
         backward_penalty = -torch.clamp(robot_lin_vel_b, max=0.0).abs() #后退惩罚
@@ -267,12 +279,12 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         total_reward = (
             # 1.0 * yaw_reward * (4.0*velocity_reward + 1.0)
-            2.0 * yaw_reward
+            3.0 * yaw_reward
+            # + 0.2 * yaw_penalty
             + 1.0 * velocity_reward
-            + 0.4 * yaw_penalty
             + 0.3 * backward_penalty
-            + 0.7 * pitch_penalty
-            + 0.7 * roll_penalty
+            + 0.5 * pitch_penalty
+            + 0.5 * roll_penalty
             + 0.4 * centering_penalty
             + 0.2 * centering_reward
         )
