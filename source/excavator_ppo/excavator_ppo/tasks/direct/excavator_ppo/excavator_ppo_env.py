@@ -49,7 +49,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg) #机器人为Articulation类型，传入配置参数
         # add ground plane
-        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+        # spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
         # add articulation to scene
@@ -314,12 +314,11 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         #重置环境参数流程：获取默认初始状态 -> 调整位置到环境原点 -> 写入模拟器
         joint_pos = self.robot.data.default_joint_pos[env_ids] #获取默认关节位置
-        self.joint_pos[env_ids] = joint_pos
         self.robot.write_joint_position_to_sim(joint_pos, None, env_ids)
 
-        default_root_state = self.robot.data.default_root_state[env_ids] #获取默认根状态
-        default_root_state[:, :3] += self.scene.env_origins[env_ids] #将根位置调整到各自环境的原点
-        # default_root_state[:, :3] += self._terrain.env_origins[env_ids]
+        default_root_state = self.robot.data.default_root_state[env_ids].clone() #获取默认根状态
+        # default_root_state[:, :3] += self.scene.env_origins[env_ids] #重置在环境生成的原点
+        default_root_state[:, :3] += self._terrain.env_origins[env_ids] #重置在地形生成的原点
         self.robot.write_root_state_to_sim(default_root_state, env_ids) #写入关节位置和速度
 
 def define_markers() -> VisualizationMarkers:
