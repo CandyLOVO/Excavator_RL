@@ -208,7 +208,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         total_reward = (
             # 2.0 * yaw_reward * (1.0*velocity_reward + 1.0)
             3.0 * yaw_reward
-            + 0.8 * velocity_reward
+            + 0.2 * velocity_reward
             + 0.3 * backward_penalty
             + 0.5 * pitch_penalty
             + 0.5 * roll_penalty

@@ -10,6 +10,7 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
 import isaaclab.terrains as terrain_gen
 import isaaclab.sim as sim_utils
+import math
 
 @configclass
 class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
@@ -29,20 +30,28 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = EXCAVATOR_CFG.replace(prim_path="/World/envs/env_.*/Robot") #替换所有副本路径
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1024, env_spacing=20.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1024, env_spacing=6.0, replicate_physics=True)
+
+    _num_envs = scene.num_envs if hasattr(scene, "num_envs") else 1
+    _env_spacing = scene.env_spacing if hasattr(scene, "env_spacing") else 6.0
+
+    _rows = int(math.ceil(math.sqrt(_num_envs)))
+    _cols = int(math.ceil(_num_envs / _rows))
+
+    _tile_size = max(8.0, float(_env_spacing) * 1.5)
 
     ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
-        size=(20.0, 20.0),
+        size=(_tile_size, _tile_size),
         border_width=0.0,
-        num_rows=35,
-        num_cols=35,
+        num_rows=_rows,
+        num_cols=_cols,
         horizontal_scale=0.2,
         vertical_scale=0.005,
         slope_threshold=0.75,
         use_cache=False,
         sub_terrains={
             "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
-                proportion=1.0, noise_range=(0.02, 0.10), noise_step=0.02, border_width=0
+                proportion=1.0, noise_range=(0.02, 0.08), noise_step=0.02, border_width=0
             ),
         },
     )
@@ -53,10 +62,10 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
         max_init_terrain_level=5, #课程难度层级，为None，默认max_init_level=num_rows-1；设置为5意味着初始难度层级会从0～5之间随机抽取（若 num_rows > 6）
         collision_group=-1, #被设置为“与环境实例发生碰撞”的全局路径（例如 ground 要与所有 env 中的机器人发生碰撞，因此常设为 -1）
         physics_material=sim_utils.RigidBodyMaterialCfg(
-            friction_combine_mode="multiply", #两个接触体有不同摩擦系数时，合成策略采用乘法（常见选项：average, min, max, multiply 等）。multiply 会把两个摩擦值相乘，结果通常更小/更大取决于值
+            friction_combine_mode="max", #两个接触体有不同摩擦系数时，合成策略采用乘法（常见选项：average, min, max, multiply 等）。multiply 会把两个摩擦值相乘，结果通常更小/更大取决于值
             restitution_combine_mode="multiply", #弹性系数合成策略采用乘法
-            static_friction=1.0, #静摩擦系数
-            dynamic_friction=1.0, #动摩擦系数
+            static_friction=1.5, #静摩擦系数
+            dynamic_friction=1.5, #动摩擦系数
         ),
         debug_vis=False, #是否创建并显示 terrain origins（子地形原点 / env spawn 点）等调试标记
     )

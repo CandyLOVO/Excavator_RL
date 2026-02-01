@@ -91,6 +91,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
 
+    # ########################################################################################################################
+    # # dynamic terrain size update
+    # if args_cli.num_envs is not None and hasattr(env_cfg, "terrain") and hasattr(env_cfg.terrain, "terrain_generator"):
+    #     import math
+    #     # Re-calculate terrain size
+    #     _num_envs = env_cfg.scene.num_envs
+    #     _env_spacing = env_cfg.scene.env_spacing if hasattr(env_cfg.scene, "env_spacing") else 6.0
+        
+    #     _rows = int(math.ceil(math.sqrt(_num_envs)))
+    #     _cols = int(math.ceil(_num_envs / _rows))
+    #     _tile_size = max(8.0, float(_env_spacing) * 1.5)
+        
+    #     env_cfg.terrain.terrain_generator.num_rows = _rows
+    #     env_cfg.terrain.terrain_generator.num_cols = _cols
+    #     env_cfg.terrain.terrain_generator.size = (_tile_size, _tile_size)
+    #     print(f"[INFO] Updated terrain size to {_rows}x{_cols} tiles of size {_tile_size:.2f}m based on num_envs={_num_envs}")
+    # ########################################################################################################################
+
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
