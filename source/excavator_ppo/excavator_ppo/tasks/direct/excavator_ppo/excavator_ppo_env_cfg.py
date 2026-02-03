@@ -39,10 +39,11 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     _cols = int(math.ceil(_num_envs / _rows))
 
     _tile_size = max(8.0, float(_env_spacing) * 1.5)
+    _border_width = 50.0  # 在地形网格外围添加平坦边界（米），防止挖掘机跑出后掉落
 
     ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         size=(_tile_size, _tile_size),
-        border_width=0.0,
+        border_width=_border_width,  # 平坦边界宽度
         num_rows=_rows,
         num_cols=_cols,
         horizontal_scale=0.2,
