@@ -30,10 +30,10 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = EXCAVATOR_CFG.replace(prim_path="/World/envs/env_.*/Robot") #替换所有副本路径
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1024, env_spacing=6.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1024, env_spacing=10.0, replicate_physics=True)
 
     _num_envs = scene.num_envs if hasattr(scene, "num_envs") else 1
-    _env_spacing = scene.env_spacing if hasattr(scene, "env_spacing") else 6.0
+    _env_spacing = scene.env_spacing if hasattr(scene, "env_spacing") else 10.0
 
     _rows = int(math.ceil(math.sqrt(_num_envs)))
     _cols = int(math.ceil(_num_envs / _rows))
@@ -64,9 +64,10 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
         collision_group=-1, #被设置为“与环境实例发生碰撞”的全局路径（例如 ground 要与所有 env 中的机器人发生碰撞，因此常设为 -1）
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="max", #两个接触体有不同摩擦系数时，合成策略采用乘法（常见选项：average, min, max, multiply 等）。multiply 会把两个摩擦值相乘，结果通常更小/更大取决于值
-            restitution_combine_mode="multiply", #弹性系数合成策略采用乘法
+            restitution_combine_mode="min", #弹性系数合成模式
             static_friction=1.5, #静摩擦系数
-            dynamic_friction=1.5, #动摩擦系数
+            dynamic_friction=1.2, #动摩擦系数
+            restitution=0.0, #弹性系数
         ),
         debug_vis=False, #是否创建并显示 terrain origins（子地形原点 / env spawn 点）等调试标记
     )
