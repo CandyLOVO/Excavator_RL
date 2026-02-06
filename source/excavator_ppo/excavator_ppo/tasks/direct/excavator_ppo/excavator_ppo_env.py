@@ -5,7 +5,7 @@ import torch
 from collections.abc import Sequence
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
+from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import sample_uniform
@@ -62,6 +62,11 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
+        ######################################################
+
+        ##################### 创建静态平台 #####################
+        self.platform = RigidObject(self.cfg.platform_cfg)
+        self.scene.rigid_objects["platform"] = self.platform
         ######################################################
         
         ################# 创建指令向量（目标值）##################
@@ -248,6 +253,12 @@ class ExcavatorPpoEnv(DirectRLEnv):
         default_root_state[:, :3] += self._terrain.env_origins[env_ids] #重置在地形生成的原点
         default_root_state[:, 2] += 0.5
         self.robot.write_root_state_to_sim(default_root_state, env_ids) #写入关节位置和速度
+
+        #重置静态平台位置到地形原点+偏移
+        platform_offset = torch.tensor(self.cfg.platform_offset, device=self.device)
+        default_platform_state = self.platform.data.default_root_state[env_ids].clone()
+        default_platform_state[:, :3] = self._terrain.env_origins[env_ids] + platform_offset
+        self.platform.write_root_state_to_sim(default_platform_state, env_ids)
 
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""

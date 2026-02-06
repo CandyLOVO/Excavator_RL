@@ -1,7 +1,7 @@
 from excavator_ppo.robots.excavator import EXCAVATOR_CFG  # 挖掘机机器人配置
 # from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG
 
-from isaaclab.assets import ArticulationCfg #机器人配置
+from isaaclab.assets import ArticulationCfg, RigidObjectCfg #机器人配置、刚体物体配置
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg #交互场景配置，环境数量、环境间距、物理复制
 from isaaclab.sim import SimulationCfg #模拟配置，时间步长、渲染间隔
@@ -30,7 +30,11 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = EXCAVATOR_CFG.replace(prim_path="/World/envs/env_.*/Robot") #替换所有副本路径
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1024, env_spacing=10.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(
+        num_envs=1024, 
+        env_spacing=10.0, 
+        replicate_physics=True, 
+    )
 
     _num_envs = scene.num_envs if hasattr(scene, "num_envs") else 1
     _env_spacing = scene.env_spacing if hasattr(scene, "env_spacing") else 10.0
@@ -40,7 +44,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
 
     _tile_size = max(8.0, float(_env_spacing) * 1.5)
     _border_width = 50.0  # 在地形网格外围添加平坦边界（米），防止挖掘机跑出后掉落
-
+    
     ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         size=(_tile_size, _tile_size),
         border_width=_border_width,  # 平坦边界宽度
@@ -56,6 +60,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
             ),
         },
     )
+
     terrain = TerrainImporterCfg(
         prim_path="/World/ground", #USD stage中创建地形的根路径
         terrain_type="generator", #“程序生成器”生成多个子地形网络
@@ -81,3 +86,23 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     position_action_scale = 1.5  # 机械臂位置控制缩放
     body_yaw_scale = 1.0 # 身体旋转控制缩放
     action_scale = 1.5  # 履带速度控制缩放
+
+    ##################### 静态平台配置 ######################
+    platform_offset = (5.0, 0.0, 1.5)  # 平台相对于环境原点的偏移 (x, y, z)，z=1.5使平台底部接近地面
+    platform_cfg: RigidObjectCfg = RigidObjectCfg(
+        prim_path="/World/envs/env_.*/Platform",
+        spawn=sim_utils.CuboidCfg(
+            size=(5.0, 3.0, 1.5),  # 尺寸：长5m x 宽3m x 高1.5m
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                kinematic_enabled=True,  # 设置为运动学物体（静态，不受物理影响）
+            ),
+            collision_props=sim_utils.CollisionPropertiesCfg(),  # 启用碰撞
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.5, 0.5, 0.5),  # 灰色外观
+            ),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=platform_offset,  # 初始位置将在环境中根据env原点调整
+        ),
+    )
+    ########################################################
