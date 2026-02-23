@@ -88,11 +88,11 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     action_scale = 1.5  # 履带速度控制缩放
 
     ##################### 静态平台配置 ######################
-    platform_offset = (5.0, 0.0, 1.5)  # 平台相对于环境原点的偏移 (x, y, z)，z=1.5使平台底部接近地面
+    platform_offset = (0.0, -4, 0.2)  # 平台相对于环境原点的偏移
     platform_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Platform",
         spawn=sim_utils.CuboidCfg(
-            size=(5.0, 3.0, 1.5),  # 尺寸：长5m x 宽3m x 高1.5m
+            size=(5.0, 6.0, 1.5),  # 尺寸：长5m x 宽6m x 高1.5m
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 kinematic_enabled=True,  # 设置为运动学物体（静态，不受物理影响）
             ),

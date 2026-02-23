@@ -70,10 +70,19 @@ class ExcavatorPpoEnv(DirectRLEnv):
         ######################################################
         
         ################# 创建指令向量（目标值）##################
-        self.commands = torch.randn((self.cfg.scene.num_envs, 3)).to(device=self.device) #初始随机指令——世界坐标系
-        self.commands[:, -1] = 0.0
-        cmd_norm = torch.linalg.norm(self.commands, dim=1, keepdim=True).clamp_min(1e-6)
-        self.commands = self.commands / cmd_norm
+        # self.commands = torch.randn((self.cfg.scene.num_envs, 3)).to(device=self.device) #初始随机指令——世界坐标系
+        # self.commands[:, -1] = 0.0
+        # cmd_norm = torch.linalg.norm(self.commands, dim=1, keepdim=True).clamp_min(1e-6)
+        # self.commands = self.commands / cmd_norm
+
+        # 指向平台的方向向量
+        platform_offset = torch.tensor(self.cfg.platform_offset, device=self.device)
+        platform_pos = self._terrain.env_origins + platform_offset  # 平台位置
+        robot_pos = self._terrain.env_origins  # 机器人初始位置（地形原点）
+        direction = platform_pos - robot_pos  # 指向平台的方向
+        direction[:, -1] = 0.0  # 忽略Z轴
+        cmd_norm = torch.linalg.norm(direction, dim=1, keepdim=True).clamp_min(1e-6)
+        self.commands = direction / cmd_norm  # 归一化后的指令向量
         ######################################################
 
         #####################创建可视化标记#####################
@@ -179,14 +188,13 @@ class ExcavatorPpoEnv(DirectRLEnv):
         dot = torch.sum(self.forwards * self.commands, dim=-1, keepdim=True)
         cross = torch.cross(self.forwards, self.commands, dim=-1)[:,-1].reshape(-1,1) 
         yaw_error = torch.atan2(cross, dot)  # 偏航误差，范围[-π, π]
-        # yaw_reward = torch.exp(-1.0 * torch.abs(yaw_error)).squeeze(-1) #在误差接近180度时，停在原地，该附近的值极小且斜率极其平缓，不知道往哪边转
-        
+        # yaw_reward = torch.exp(-1.0 * torch.abs(yaw_error)).squeeze(-1) #在误差接近180度时，停在原地，该附近的值极小且斜率极其平缓，不知道往哪边转  
         abs_yaw_error = torch.abs(yaw_error).squeeze(-1)
         yaw_reward = 1.0 - (abs_yaw_error / math.pi) #线性斜率
 
         # yaw_reward_lin = 1.0 - (abs_yaw_error / math.pi)
         # yaw_reward_exp = torch.exp(-10.0 * abs_yaw_error)
-        # yaw_reward = 0.7 * yaw_reward_lin + 0.3 * yaw_reward_exp
+        # yaw_reward = 0.7 * yaw_reward_lin + 0.3 * yaw_reward_exp #混合线性和指数奖励
 
         ang_vel_z = self.robot.data.root_ang_vel_b[:, 2]
         turning_reward = torch.abs(ang_vel_z) * (1.0 - yaw_reward) # 越不对齐，转动奖励越高
@@ -209,10 +217,9 @@ class ExcavatorPpoEnv(DirectRLEnv):
         centering_penalty = -torch.exp(torch.abs(body_yaw)) + 1.0
         centering_reward = torch.exp(-1.0 * torch.abs(body_yaw))
 
-
         total_reward = (
             # 2.0 * yaw_reward * (1.0*velocity_reward + 1.0)
-            3.0 * yaw_reward
+            + 3.0 * yaw_reward
             + 0.2 * velocity_reward
             + 0.3 * backward_penalty
             + 0.5 * pitch_penalty
@@ -236,10 +243,23 @@ class ExcavatorPpoEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids) #调用父类的重置方法
 
+        # #重置指令向量和可视化标记（只重置需要重置的环境）
+        # new_commands = torch.randn((len(env_ids), 3), device=self.device) #为需要重置的环境生成新指令
+        # new_commands[:, -1] = 0.0
+        # new_commands = new_commands / torch.linalg.norm(new_commands, dim=1, keepdim=True) #归一化
+        # self.commands[env_ids] = new_commands
+        # self.yaws[env_ids] = torch.atan2(new_commands[:, 1], new_commands[:, 0]).unsqueeze(1)
+        # self._visualize_markers()
+
         #重置指令向量和可视化标记（只重置需要重置的环境）
-        new_commands = torch.randn((len(env_ids), 3), device=self.device) #为需要重置的环境生成新指令
-        new_commands[:, -1] = 0.0
-        new_commands = new_commands / torch.linalg.norm(new_commands, dim=1, keepdim=True) #归一化
+        # 计算指向平台的方向向量
+        platform_offset = torch.tensor(self.cfg.platform_offset, device=self.device)
+        platform_pos = self._terrain.env_origins[env_ids] + platform_offset  # 平台位置
+        robot_pos = self._terrain.env_origins[env_ids]  # 机器人初始位置（地形原点）
+        direction = platform_pos - robot_pos  # 指向平台的方向
+        direction[:, -1] = 0.0  # 忽略Z轴
+        cmd_norm = torch.linalg.norm(direction, dim=1, keepdim=True).clamp_min(1e-6)
+        new_commands = direction / cmd_norm  # 归一化后的指令向量
         self.commands[env_ids] = new_commands
         self.yaws[env_ids] = torch.atan2(new_commands[:, 1], new_commands[:, 0]).unsqueeze(1)
         self._visualize_markers()
@@ -251,7 +271,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         default_root_state = self.robot.data.default_root_state[env_ids] #获取默认根状态
         # default_root_state[:, :3] += self.scene.env_origins[env_ids] #重置在环境生成的原点
         default_root_state[:, :3] += self._terrain.env_origins[env_ids] #重置在地形生成的原点
-        default_root_state[:, 2] += 0.5
+        default_root_state[:, 2] += 0.3
         self.robot.write_root_state_to_sim(default_root_state, env_ids) #写入关节位置和速度
 
         #重置静态平台位置到地形原点+偏移
