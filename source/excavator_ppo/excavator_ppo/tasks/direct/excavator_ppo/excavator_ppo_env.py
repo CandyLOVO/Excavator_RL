@@ -64,25 +64,17 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
         ######################################################
 
-        ##################### 创建静态平台 #####################
-        self.platform = RigidObject(self.cfg.platform_cfg)
-        self.scene.rigid_objects["platform"] = self.platform
+        ############## 静态平台（已禁用 — 改用随机方向指令）###########
+        # self.platform = RigidObject(self.cfg.platform_cfg)
+        # self.scene.rigid_objects["platform"] = self.platform
         ######################################################
         
         ################# 创建指令向量（目标值）##################
-        # self.commands = torch.randn((self.cfg.scene.num_envs, 3)).to(device=self.device) #初始随机指令——世界坐标系
-        # self.commands[:, -1] = 0.0
-        # cmd_norm = torch.linalg.norm(self.commands, dim=1, keepdim=True).clamp_min(1e-6)
-        # self.commands = self.commands / cmd_norm
-
-        # 指向平台的方向向量
-        platform_offset = torch.tensor(self.cfg.platform_offset, device=self.device)
-        platform_pos = self._terrain.env_origins + platform_offset  # 平台位置
-        robot_pos = self._terrain.env_origins  # 机器人初始位置（地形原点）
-        direction = platform_pos - robot_pos  # 指向平台的方向
-        direction[:, -1] = 0.0  # 忽略Z轴
-        cmd_norm = torch.linalg.norm(direction, dim=1, keepdim=True).clamp_min(1e-6)
-        self.commands = direction / cmd_norm  # 归一化后的指令向量
+        # 随机方向指令 — 水平面内均匀采样方向向量
+        self.commands = torch.randn((self.cfg.scene.num_envs, 3), device=self.device)
+        self.commands[:, -1] = 0.0  # 忽略Z轴
+        cmd_norm = torch.linalg.norm(self.commands, dim=1, keepdim=True).clamp_min(1e-6)
+        self.commands = self.commands / cmd_norm  # 归一化
         ######################################################
 
         #####################创建可视化标记#####################
@@ -233,7 +225,16 @@ class ExcavatorPpoEnv(DirectRLEnv):
     #获取终止状态，返回是否越界和是否超时
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        terminated = torch.zeros_like(time_out, dtype=torch.bool)
+
+        # 预计算本体朝向和重力投影（供后续 _get_rewards 使用最新数据）
+        self.forwards = math_utils.quat_apply(self.robot.data.root_quat_w, self.robot.data.FORWARD_VEC_B)
+        gravity_world = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
+        self.gravity_body = math_utils.quat_apply_inverse(self.robot.data.root_quat_w, gravity_world)
+
+        # 翻车检测：gravity_body_z 正常≈-1，翻转≈+1；阈值 -0.3 对应倾斜约 72°
+        flipped = self.gravity_body[:, 2] > -0.3
+
+        terminated = flipped
         truncated = time_out.to(torch.bool)
         return terminated, truncated
 
@@ -252,14 +253,10 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # self._visualize_markers()
 
         #重置指令向量和可视化标记（只重置需要重置的环境）
-        # 计算指向平台的方向向量
-        platform_offset = torch.tensor(self.cfg.platform_offset, device=self.device)
-        platform_pos = self._terrain.env_origins[env_ids] + platform_offset  # 平台位置
-        robot_pos = self._terrain.env_origins[env_ids]  # 机器人初始位置（地形原点）
-        direction = platform_pos - robot_pos  # 指向平台的方向
-        direction[:, -1] = 0.0  # 忽略Z轴
-        cmd_norm = torch.linalg.norm(direction, dim=1, keepdim=True).clamp_min(1e-6)
-        new_commands = direction / cmd_norm  # 归一化后的指令向量
+        new_commands = torch.randn((len(env_ids), 3), device=self.device)
+        new_commands[:, -1] = 0.0
+        cmd_norm = torch.linalg.norm(new_commands, dim=1, keepdim=True).clamp_min(1e-6)
+        new_commands = new_commands / cmd_norm  # 归一化随机方向
         self.commands[env_ids] = new_commands
         self.yaws[env_ids] = torch.atan2(new_commands[:, 1], new_commands[:, 0]).unsqueeze(1)
         self._visualize_markers()
@@ -274,11 +271,11 @@ class ExcavatorPpoEnv(DirectRLEnv):
         default_root_state[:, 2] += 0.3
         self.robot.write_root_state_to_sim(default_root_state, env_ids) #写入关节位置和速度
 
-        #重置静态平台位置到地形原点+偏移
-        platform_offset = torch.tensor(self.cfg.platform_offset, device=self.device)
-        default_platform_state = self.platform.data.default_root_state[env_ids].clone()
-        default_platform_state[:, :3] = self._terrain.env_origins[env_ids] + platform_offset
-        self.platform.write_root_state_to_sim(default_platform_state, env_ids)
+        # 静态平台重置（已禁用）
+        # platform_offset = torch.tensor(self.cfg.platform_offset, device=self.device)
+        # default_platform_state = self.platform.data.default_root_state[env_ids].clone()
+        # default_platform_state[:, :3] = self._terrain.env_origins[env_ids] + platform_offset
+        # self.platform.write_root_state_to_sim(default_platform_state, env_ids)
 
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""

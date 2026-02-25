@@ -45,18 +45,63 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     _tile_size = max(8.0, float(_env_spacing) * 1.5)
     _border_width = 50.0  # 在地形网格外围添加平坦边界（米），防止挖掘机跑出后掉落
     
+    # ────────────────── 多地形课程学习配置 ──────────────────
+    # curriculum=True：行(x)方向 = 难度递增，列(y)方向 = 地形类型按 proportion 分布
+    # difficulty 线性插值每种子地形 range 参数的 min→max
+    # 挖掘机轮半径 ≈ 0.245m，轴距 ≈ 1.88m，轮距 ≈ 1.54m
     ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         size=(_tile_size, _tile_size),
-        border_width=_border_width,  # 平坦边界宽度
+        border_width=_border_width,
         num_rows=_rows,
         num_cols=_cols,
         horizontal_scale=0.2,
         vertical_scale=0.005,
         slope_threshold=0.75,
         use_cache=False,
+        curriculum=True,              # 启用课程学习
+        difficulty_range=(0.0, 1.0),  # 难度范围
         sub_terrains={
+            "flat": terrain_gen.MeshPlaneTerrainCfg(
+                proportion=0.10,      # 10% 平坦地形 — 基线恢复区
+            ),
             "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
-                proportion=1.0, noise_range=(0.02, 0.08), noise_step=0.02, border_width=0
+                proportion=0.15,      # 15% 随机粗糙地形
+                noise_range=(0.02, 0.15),  # 高度噪声(m)，随难度 0.02→0.15
+                noise_step=0.02,
+                border_width=0.25,
+            ),
+            "pyramid_slopes": terrain_gen.HfPyramidSlopedTerrainCfg(
+                proportion=0.20,      # 20% 金字塔坡面（爬坡训练）
+                slope_range=(0.0, 0.4),    # 坡度 0→0.4 rad（~0→22°）
+                platform_width=2.0,
+                border_width=0.25,
+            ),
+            "pyramid_slopes_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
+                proportion=0.10,      # 10% 倒金字塔（凹地/谷地）
+                slope_range=(0.0, 0.4),
+                platform_width=2.0,
+                border_width=0.25,
+            ),
+            "discrete_obstacles": terrain_gen.HfDiscreteObstaclesTerrainCfg(
+                proportion=0.20,      # 20% 离散障碍物（碎石/矿堆）— 核心翻越训练
+                obstacle_height_range=(0.05, 0.20),  # 障碍高度(m)，≤轮半径 0.245m
+                obstacle_width_range=(0.4, 1.5),     # 障碍宽度(m)
+                num_obstacles=20,
+                platform_width=2.0,
+                border_width=0.25,
+            ),
+            "wave": terrain_gen.HfWaveTerrainCfg(
+                proportion=0.15,      # 15% 波浪起伏地形（自然地貌）
+                amplitude_range=(0.02, 0.15),
+                num_waves=3,
+                border_width=0.25,
+            ),
+            "pyramid_stairs": terrain_gen.HfPyramidStairsTerrainCfg(
+                proportion=0.10,      # 10% 金字塔台阶（模拟工地台阶）
+                step_height_range=(0.05, 0.12),  # 台阶高度(m)，适合轮式底盘
+                step_width=0.5,
+                platform_width=2.0,
+                border_width=0.25,
             ),
         },
     )
@@ -87,22 +132,16 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     body_yaw_scale = 1.0 # 身体旋转控制缩放
     action_scale = 1.5  # 履带速度控制缩放
 
-    ##################### 静态平台配置 ######################
-    platform_offset = (0.0, -4, 0.2)  # 平台相对于环境原点的偏移
-    platform_cfg: RigidObjectCfg = RigidObjectCfg(
-        prim_path="/World/envs/env_.*/Platform",
-        spawn=sim_utils.CuboidCfg(
-            size=(5.0, 6.0, 1.5),  # 尺寸：长5m x 宽6m x 高1.5m
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                kinematic_enabled=True,  # 设置为运动学物体（静态，不受物理影响）
-            ),
-            collision_props=sim_utils.CollisionPropertiesCfg(),  # 启用碰撞
-            visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.5, 0.5, 0.5),  # 灰色外观
-            ),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(
-            pos=platform_offset,  # 初始位置将在环境中根据env原点调整
-        ),
-    )
+    ######### 静态平台配置（已禁用 — 复杂地形下平台可能与地形特征穿插）########
+    # platform_offset = (0.0, -4, 0.2)
+    # platform_cfg: RigidObjectCfg = RigidObjectCfg(
+    #     prim_path="/World/envs/env_.*/Platform",
+    #     spawn=sim_utils.CuboidCfg(
+    #         size=(5.0, 6.0, 1.5),
+    #         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+    #         collision_props=sim_utils.CollisionPropertiesCfg(),
+    #         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.5, 0.5)),
+    #     ),
+    #     init_state=RigidObjectCfg.InitialStateCfg(pos=platform_offset),
+    # )
     ########################################################
