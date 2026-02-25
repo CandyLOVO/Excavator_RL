@@ -8,6 +8,7 @@ from isaaclab.sim import SimulationCfg #模拟配置，时间步长、渲染间�
 from isaaclab.utils import configclass
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
+from isaaclab.sensors import RayCasterCfg, patterns
 import isaaclab.terrains as terrain_gen
 import isaaclab.sim as sim_utils
 import math
@@ -20,7 +21,10 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
 
     # - spaces definition
     action_space = 6
-    observation_space = 10
+    # obs = base_lin_vel(3) + base_ang_vel(3) + gravity(3) + commands(3)
+    #     + arm_joint_pos(4) + arm_joint_vel(4) + wheel_vel(6)
+    #     + actions(6) + heights(221)
+    observation_space = 253
     state_space = 0
 
     # simulation
@@ -36,90 +40,99 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
         replicate_physics=True, 
     )
 
-    _num_envs = scene.num_envs if hasattr(scene, "num_envs") else 1
-    _env_spacing = scene.env_spacing if hasattr(scene, "env_spacing") else 10.0
+    # ────── 高度扫描传感器（RayCaster）──────
+    # 挂载在 base_link，向前偏移 1m，从 20m 高处向下射线测量地形高度
+    # 覆盖 8m(纵向) × 6m(横向)，分辨率 0.5m → 17×13 = 221 个采样点
+    # 前方可见距离 ~5m，后方 ~3m，给策略足够前瞻规划时间
+    height_scanner = RayCasterCfg(
+        prim_path="/World/envs/env_.*/Robot/base_link",
+        offset=RayCasterCfg.OffsetCfg(pos=(1.0, 0.0, 20.0)),  # 向前偏移 1m
+        ray_alignment="yaw",
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.5, size=[8.0, 6.0]),
+        debug_vis=False,
+        mesh_prim_paths=["/World/ground"],
+    )
 
-    _rows = int(math.ceil(math.sqrt(_num_envs)))
-    _cols = int(math.ceil(_num_envs / _rows))
+    # ────── 命令配置（4 维: lin_vel_x, lin_vel_y, ang_vel_yaw, heading）──────
+    num_commands = 4
+    heading_command = True      # heading 模式：从 heading 误差重新计算 ang_vel_yaw
+    command_resampling_time = 10.0  # 命令重采样间隔 (s)
+    lin_vel_x_range = [0.3, 1.5]    # 前进速度 (m/s)，挖掘机较慢
+    lin_vel_y_range = [0.0, 0.0]    # 侧向速度（挖掘机不侧移）
+    ang_vel_yaw_range = [0.0, 0.0]  # 偏航角速度范围（heading 模式下由误差重算）
+    heading_range = [math.pi / 2, math.pi / 2]  # 始终指向 +y（π/2 rad）
 
-    _tile_size = max(8.0, float(_env_spacing) * 1.5)
-    _border_width = 50.0  # 在地形网格外围添加平坦边界（米），防止挖掘机跑出后掉落
-    
-    # ────────────────── 多地形课程学习配置 ──────────────────
-    # curriculum=True：行(x)方向 = 难度递增，列(y)方向 = 地形类型按 proportion 分布
-    # difficulty 线性插值每种子地形 range 参数的 min→max
-    # 挖掘机轮半径 ≈ 0.245m，轴距 ≈ 1.88m，轮距 ≈ 1.54m
-    ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
-        size=(_tile_size, _tile_size),
+    # 所有挖掘机沿 +y 方向在同一条宽赛道上依次穿越地形
+    track_num_stages = 6          # 地形阶段数
+    track_width = 80.0            # 赛道宽度 (m)，所有挖掘机共享
+    track_section_length = 40.0   # 每段地形沿 y 方向长度 (m)，6段共240m长条道路
+    track_difficulty = 0.5        # 地形难度（0.0~1.0），控制随机粗糙度、障碍密度/高度、波浪振幅、台阶高度等参数
+    _border_width = 0.0          # 地形边界平坦区 (m)
+
+    TRACK_TERRAINS_CFG = TerrainGeneratorCfg(
+        size=(track_width, track_section_length),  # 每个 tile: 80m(x宽) × 40m(y长)
         border_width=_border_width,
-        num_rows=_rows,
-        num_cols=_cols,
-        horizontal_scale=0.2,
+        num_rows=1,                    # 赛道数量
+        num_cols=track_num_stages,     # 地形段数
+        horizontal_scale=0.1,
         vertical_scale=0.005,
         slope_threshold=0.75,
         use_cache=False,
-        curriculum=True,              # 启用课程学习
-        difficulty_range=(0.0, 1.0),  # 难度范围
+        curriculum=True,
+        difficulty_range=(track_difficulty, track_difficulty),
         sub_terrains={
-            "flat": terrain_gen.MeshPlaneTerrainCfg(
-                proportion=0.10,      # 10% 平坦地形 — 基线恢复区
+            # 字典顺序决定列映射，勿调换 !!
+            "flat_start": terrain_gen.MeshPlaneTerrainCfg(
+                proportion=1.0 / 6,          # col 0 — 起点平地
             ),
             "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
-                proportion=0.15,      # 15% 随机粗糙地形
-                noise_range=(0.02, 0.15),  # 高度噪声(m)，随难度 0.02→0.15
+                proportion=1.0 / 6,          # col 1 — 随机粗糙地形
+                noise_range=(0.02, 0.10),
                 noise_step=0.02,
-                border_width=0.25,
-            ),
-            "pyramid_slopes": terrain_gen.HfPyramidSlopedTerrainCfg(
-                proportion=0.20,      # 20% 金字塔坡面（爬坡训练）
-                slope_range=(0.0, 0.4),    # 坡度 0→0.4 rad（~0→22°）
-                platform_width=2.0,
-                border_width=0.25,
-            ),
-            "pyramid_slopes_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
-                proportion=0.10,      # 10% 倒金字塔（凹地/谷地）
-                slope_range=(0.0, 0.4),
-                platform_width=2.0,
-                border_width=0.25,
+                border_width=0.25, 
             ),
             "discrete_obstacles": terrain_gen.HfDiscreteObstaclesTerrainCfg(
-                proportion=0.20,      # 20% 离散障碍物（碎石/矿堆）— 核心翻越训练
-                obstacle_height_range=(0.05, 0.20),  # 障碍高度(m)，≤轮半径 0.245m
-                obstacle_width_range=(0.4, 1.5),     # 障碍宽度(m)
-                num_obstacles=20,
-                platform_width=2.0,
+                proportion=1.0 / 6,          # col 2 — 离散障碍物（纯凸起，需配合机械臂翻越）
+                obstacle_height_mode="fixed", # 只生成凸起障碍物，无凹坑
+                obstacle_height_range=(0.25, 0.50), # 障碍高度
+                obstacle_width_range=(3.0, 5.0),     # 障碍宽度
+                num_obstacles=50, 
+                platform_width=3.0,
                 border_width=0.25,
             ),
             "wave": terrain_gen.HfWaveTerrainCfg(
-                proportion=0.15,      # 15% 波浪起伏地形（自然地貌）
-                amplitude_range=(0.02, 0.15),
-                num_waves=3,
+                proportion=1.0 / 6,          # col 3 — 波浪起伏（模拟工地土堆/缓坡山丘）
+                amplitude_range=(0.10, 1.0), # 振幅
+                num_waves=2,                  # 波周期
                 border_width=0.25,
             ),
             "pyramid_stairs": terrain_gen.HfPyramidStairsTerrainCfg(
-                proportion=0.10,      # 10% 金字塔台阶（模拟工地台阶）
-                step_height_range=(0.05, 0.12),  # 台阶高度(m)，适合轮式底盘
-                step_width=0.5,
-                platform_width=2.0,
+                proportion=1.0 / 6,          # col 4 — 金字塔台阶（模拟采矿阶梯/土方边坡）
+                step_height_range=(0.08, 0.20),  # 台阶高度 0.08~0.20m，需要谨慎驾驶
+                step_width=0.8,               # 台阶宽度 0.8m，提供足够轮距着陆面
+                platform_width=2.5,           # 顶部平台 2.5m，给挖掘机足够转向空间
                 border_width=0.25,
+            ),
+            "flat_end": terrain_gen.MeshPlaneTerrainCfg(
+                proportion=1.0 / 6,          # col 5 — 终点平地
             ),
         },
     )
 
     terrain = TerrainImporterCfg(
-        prim_path="/World/ground", #USD stage中创建地形的根路径
-        terrain_type="generator", #“程序生成器”生成多个子地形网络
-        terrain_generator=ROUGH_TERRAINS_CFG, #每个子地形(size)8*8m，子地形行列数(num_rows, num_cols)10*20，子地形边界外延(border_width)20m
-        max_init_terrain_level=5, #课程难度层级，为None，默认max_init_level=num_rows-1；设置为5意味着初始难度层级会从0～5之间随机抽取（若 num_rows > 6）
-        collision_group=-1, #被设置为“与环境实例发生碰撞”的全局路径（例如 ground 要与所有 env 中的机器人发生碰撞，因此常设为 -1）
+        prim_path="/World/ground",
+        terrain_type="generator",
+        terrain_generator=TRACK_TERRAINS_CFG,
+        max_init_terrain_level=0,   # 不使用课程升降级
+        collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
-            friction_combine_mode="max", #两个接触体有不同摩擦系数时，合成策略采用乘法（常见选项：average, min, max, multiply 等）。multiply 会把两个摩擦值相乘，结果通常更小/更大取决于值
-            restitution_combine_mode="min", #弹性系数合成模式
-            static_friction=1.5, #静摩擦系数
-            dynamic_friction=1.2, #动摩擦系数
-            restitution=0.0, #弹性系数
+            friction_combine_mode="max",
+            restitution_combine_mode="min",
+            static_friction=1.5,
+            dynamic_friction=1.2,
+            restitution=0.0,
         ),
-        debug_vis=False, #是否创建并显示 terrain origins（子地形原点 / env spawn 点）等调试标记
+        debug_vis=False,
     )
 
     body_dof_name = ["body_yaw_joint", "boom_pitch_joint", "forearm_pitch_joint", "bucket_pitch_joint"] #无所谓顺序，只是提供查询字典
@@ -131,6 +144,16 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     position_action_scale = 1.5  # 机械臂位置控制缩放
     body_yaw_scale = 1.0 # 身体旋转控制缩放
     action_scale = 1.5  # 履带速度控制缩放
+    action_rate_scale = 0.01  # 动作平滑度惩罚系数
+    arm_effort_scale = 0.01   # 机械臂能耗惩罚系数（弱惩罚，不阻止必要使用）
+
+    # ────── 观测缩放因子（参考 Go2 四足机器人）──────
+    lin_vel_scale = 2.0        # 线速度缩放
+    ang_vel_scale = 0.25       # 角速度缩放
+    dof_pos_scale = 1.0        # 关节位置缩放
+    dof_vel_scale = 0.05       # 关节速度缩放
+    height_scale = 5.0         # 高度测量缩放
+    base_height_offset = 0.5   # 底盘高度偏移 (m)，用于计算相对地形高度
 
     ######### 静态平台配置（已禁用 — 复杂地形下平台可能与地形特征穿插）########
     # platform_offset = (0.0, -4, 0.2)
