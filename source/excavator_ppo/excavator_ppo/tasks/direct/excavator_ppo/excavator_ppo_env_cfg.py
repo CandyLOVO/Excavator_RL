@@ -21,9 +21,6 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
 
     # - spaces definition
     action_space = 6
-    # obs = base_lin_vel(3) + base_ang_vel(3) + gravity(3) + commands(3)
-    #     + arm_joint_pos(4) + arm_joint_vel(4) + wheel_vel(6)
-    #     + actions(6) + heights(221)
     observation_space = 253
     state_space = 0
 
@@ -40,45 +37,44 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
         replicate_physics=True, 
     )
 
-    # ────── 高度扫描传感器（RayCaster）──────
-    # 挂载在 base_link，向前偏移 1m，从 20m 高处向下射线测量地形高度
-    # 覆盖 8m(纵向) × 6m(横向)，分辨率 0.5m → 17×13 = 221 个采样点
-    # 前方可见距离 ~5m，后方 ~3m，给策略足够前瞻规划时间
+    # 高度扫描传感器（RayCaster）
     height_scanner = RayCasterCfg(
         prim_path="/World/envs/env_.*/Robot/base_link",
-        offset=RayCasterCfg.OffsetCfg(pos=(1.0, 0.0, 20.0)),  # 向前偏移 1m
+        offset=RayCasterCfg.OffsetCfg(pos=(1.0, 0.0, 20.0)),  # 向前偏移 1m，高度 20m
         ray_alignment="yaw",
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.5, size=[8.0, 6.0]),
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.5, size=[8.0, 6.0]), #分辨率0.5m，范围8m×6m，17*13个采样点
         debug_vis=False,
         mesh_prim_paths=["/World/ground"],
     )
 
-    # ────── 命令配置（4 维: lin_vel_x, lin_vel_y, ang_vel_yaw, heading）──────
+    # command配置（4 维: lin_vel_x, lin_vel_y, ang_vel_yaw, heading）
     num_commands = 4
     heading_command = True      # heading 模式：从 heading 误差重新计算 ang_vel_yaw
     command_resampling_time = 10.0  # 命令重采样间隔 (s)
-    lin_vel_x_range = [0.3, 1.5]    # 前进速度 (m/s)，挖掘机较慢
-    lin_vel_y_range = [0.0, 0.0]    # 侧向速度（挖掘机不侧移）
+    lin_vel_x_range = [0.5, 2.0]    # 前进速度 (m/s)
+    lin_vel_y_range = [0.0, 0.0]    # 侧向速度（m/s)
     ang_vel_yaw_range = [0.0, 0.0]  # 偏航角速度范围（heading 模式下由误差重算）
-    heading_range = [math.pi / 2, math.pi / 2]  # 始终指向 +y（π/2 rad）
+    heading_range = [math.pi / 2, math.pi / 2]  # 目标航向 +y（π/2 rad）    
+    heading_kp = 0.5            # 期望角速度的比例增益
+    max_ang_vel = 1.0           # 期望角速度截断上限 (rad/s)
 
-    # 所有挖掘机沿 +y 方向在同一条宽赛道上依次穿越地形
+    # 地形配置
     track_num_stages = 6          # 地形阶段数
-    track_width = 80.0            # 赛道宽度 (m)，所有挖掘机共享
-    track_section_length = 40.0   # 每段地形沿 y 方向长度 (m)，6段共240m长条道路
+    track_width = 80.0            # 赛道宽度 (m)
+    track_section_length = 40.0   # 每段地形沿 y 方向长度 (m)
     track_difficulty = 0.5        # 地形难度（0.0~1.0），控制随机粗糙度、障碍密度/高度、波浪振幅、台阶高度等参数
-    _border_width = 0.0          # 地形边界平坦区 (m)
+    _border_width = 0.0           # 地形边界平坦区 (m)
 
     TRACK_TERRAINS_CFG = TerrainGeneratorCfg(
-        size=(track_width, track_section_length),  # 每个 tile: 80m(x宽) × 40m(y长)
+        size=(track_width, track_section_length),  # 每段地形尺寸
         border_width=_border_width,
         num_rows=1,                    # 赛道数量
         num_cols=track_num_stages,     # 地形段数
         horizontal_scale=0.1,
         vertical_scale=0.005,
         slope_threshold=0.75,
-        use_cache=False,
-        curriculum=True,
+        use_cache=False, #关闭地形缓存，每次训练都生成新地形
+        curriculum=True, #启用课程学习，随着训练进展逐渐增加地形难度
         difficulty_range=(track_difficulty, track_difficulty),
         sub_terrains={
             # 字典顺序决定列映射，勿调换 !!
@@ -121,10 +117,10 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
 
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
-        terrain_type="generator",
+        terrain_type="generator", #使用地形生成器而非导入预制地形
         terrain_generator=TRACK_TERRAINS_CFG,
         max_init_terrain_level=0,   # 不使用课程升降级
-        collision_group=-1,
+        collision_group=-1, 
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="max",
             restitution_combine_mode="min",
@@ -147,24 +143,10 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     action_rate_scale = 0.01  # 动作平滑度惩罚系数
     arm_effort_scale = 0.01   # 机械臂能耗惩罚系数（弱惩罚，不阻止必要使用）
 
-    # ────── 观测缩放因子（参考 Go2 四足机器人）──────
-    lin_vel_scale = 2.0        # 线速度缩放
+    # 观测缩放因子 scale = 1/典型最大值，让观测大致归一化到 [-1, 1] 范围
+    lin_vel_scale = 0.5        # 线速度缩放
     ang_vel_scale = 0.25       # 角速度缩放
     dof_pos_scale = 1.0        # 关节位置缩放
-    dof_vel_scale = 0.05       # 关节速度缩放
-    height_scale = 5.0         # 高度测量缩放
-    base_height_offset = 0.5   # 底盘高度偏移 (m)，用于计算相对地形高度
-
-    ######### 静态平台配置（已禁用 — 复杂地形下平台可能与地形特征穿插）########
-    # platform_offset = (0.0, -4, 0.2)
-    # platform_cfg: RigidObjectCfg = RigidObjectCfg(
-    #     prim_path="/World/envs/env_.*/Platform",
-    #     spawn=sim_utils.CuboidCfg(
-    #         size=(5.0, 6.0, 1.5),
-    #         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-    #         collision_props=sim_utils.CollisionPropertiesCfg(),
-    #         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.5, 0.5)),
-    #     ),
-    #     init_state=RigidObjectCfg.InitialStateCfg(pos=platform_offset),
-    # )
-    ########################################################
+    dof_vel_scale = 0.5       # 关节速度缩放
+    height_scale = 1.0         # 高度测量缩放
+    base_height_offset = 0.5   # excavator.py中的init_state pos z定义

@@ -40,7 +40,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         # 动作缓冲区（观测中包含当前动作）
         self.actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
-        self.last_actions = torch.zeros_like(self.actions)
+        self.last_actions = torch.zeros_like(self.actions) 
 
         # 命令缩放向量（用于观测归一化）
         self.commands_scale = torch.tensor(
@@ -62,7 +62,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self.robot
 
-        # 高度扫描传感器（必须在 clone_environments 之前创建）
+        # 高度扫描传感器
         self._height_scanner = RayCaster(self.cfg.height_scanner)
         self.scene.sensors["height_scanner"] = self._height_scanner
 
@@ -70,46 +70,41 @@ class ExcavatorPpoEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        ##################### 创建地形 ######################
+        # 地形
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
-        ######################################################
 
         # 克隆环境（必须在所有场景对象注册之后）
-        self.scene.clone_environments(copy_from_source=False)
+        self.scene.clone_environments(copy_from_source=False) #每个环境地形、初始朝向等独立随机
 
-        ############ 竞赛赛道：覆写 env_origins ################
-        # 所有挖掘机在同一条宽赛道上，起点 col 0（平地），沿 +y 行进到 col 5（终点平地）
+        # 设置环境原点和目标位置
         num_stages = self.cfg.track_num_stages
         tw         = self.cfg.track_width
-        sec_l      = self.cfg.track_section_length
+        sec_l      = self.cfg.track_section_length #每段地形沿 y 方向长度
 
-        y_start = 0.5 * sec_l - num_stages * sec_l / 2.0            # col 0 中心
-        y_goal  = (num_stages - 0.5) * sec_l - num_stages * sec_l / 2.0  # col 5 中心
+        y_start = 0.5 * sec_l - num_stages * sec_l / 2.0 # col 0 起点位置
+        y_goal  = (num_stages - 0.5) * sec_l - num_stages * sec_l / 2.0 # col 5 中心
 
-        self._terrain.env_origins = torch.zeros((self.num_envs, 3), device=self.device)
-        self._terrain.env_origins[:, 1] = y_start
+        self._terrain.env_origins = torch.zeros((self.num_envs, 3), device=self.device) #环境原点位置
+        self._terrain.env_origins[:, 1] = y_start 
 
         self.goal_y = y_goal
         self.start_y = y_start
         self.track_length = y_goal - y_start
         self.half_track_width = tw / 2.0
-        ######################################################
 
-        ############ 命令向量 — 4维: [lin_vel_x, lin_vel_y, ang_vel_yaw, heading] ############
+        # 命令向量 [lin_vel_x, lin_vel_y, ang_vel_yaw, heading]
         self.commands = torch.zeros((self.num_envs, self.cfg.num_commands), device=self.device)
-        self._resample_commands(torch.arange(self.num_envs, device=self.device))
-        ######################################################
+        self._resample_commands(torch.arange(self.num_envs, device=self.device)) #初始命令随机
 
-        #####################创建可视化标记#####################
+        # 可视化标记
         self.visualization_markers = define_markers()
         self.marker_locations = torch.zeros((self.num_envs, 3)).to(device=self.device)
         self.marker_offset = torch.zeros((self.num_envs, 3)).to(device=self.device)
         self.marker_offset[:, -1] = 3.0
         self.forward_marker_orientations = torch.zeros((self.num_envs, 4)).to(device=self.device)
         self.command_marker_orientations = torch.zeros((self.num_envs, 4)).to(device=self.device)
-        ######################################################
 
         self.yaws = self.commands[:, 3:4].clone()  # heading 角度用于可视化
         self.up_dir = torch.tensor([0.0, 0.0, 1.0]).to(device=self.device)
@@ -130,10 +125,10 @@ class ExcavatorPpoEnv(DirectRLEnv):
         indices = torch.hstack((torch.zeros_like(all_envs), torch.ones_like(all_envs))) #标记索引：0-前进方向，1-指令方向
         self.visualization_markers.visualize(loc, rots, marker_indices=indices)
 
-    # ────── 命令重采样 ──────
+    # 命令重采样
     def _resample_commands(self, env_ids: torch.Tensor):
-        """随机生成 lin_vel_x, lin_vel_y, heading。
-        在 heading 模式下，ang_vel_yaw 由 _update_heading_command 重算。
+        """随机生成 lin_vel_x, lin_vel_y, heading
+        在 heading 模式下 ang_vel_yaw 由 _update_heading_command 重算
         """
         n = len(env_ids)
         cfg = self.cfg
@@ -160,16 +155,18 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
     def _update_heading_command(self):
         """heading 模式：根据 heading 误差重新计算 ang_vel_yaw 命令。
-        参考 Go2: commands[:, 2] = clip(0.5 * wrap_to_pi(heading_cmd - heading), -1, 1)
+        智能体始终尝试调整朝向以对齐目标 heading 而不是直接控制角速度。
         """
         if not self.cfg.heading_command:
             return
         forward = math_utils.quat_apply(self.robot.data.root_quat_w, self.robot.data.FORWARD_VEC_B)
-        heading = torch.atan2(forward[:, 1], forward[:, 0])  # 当前机体朝向角
+        heading = torch.atan2(forward[:, 1], forward[:, 0])  # 当前机体朝向角(-π, π)
         heading_error = self.commands[:, 3] - heading
-        # wrap to [-π, π]
-        heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
-        self.commands[:, 2] = torch.clamp(0.5 * heading_error, -1.0, 1.0)
+        heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error)) #归一化偏航误差到(-π, π)
+        self.commands[:, 2] = torch.clamp(
+            self.cfg.heading_kp * heading_error,
+            -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
+        )  # 比例控制，增益与截断均由 cfg 配置
 
     #更新动作，得到动作张量的副本
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
@@ -207,10 +204,10 @@ class ExcavatorPpoEnv(DirectRLEnv):
             self.dof_pos_upper_limits[body_dof_idx]
         )
         
-        # 更新完整的body位置目标（包括body_yaw保持默认位置）
+        # 更新完整的body位置目标
         self.pos_actions = self.robot.data.default_joint_pos[:, self._body_dof_idx].clone() # 重置为默认位置
-        self.pos_actions[:, 1:] = new_arm_pos  # 更新数据
-        self.pos_actions[:, 0] = new_body_pos  # 更新数据
+        self.pos_actions[:, 1:] = new_arm_pos
+        self.pos_actions[:, 0] = new_body_pos
 
         self._visualize_markers()
 
@@ -232,77 +229,73 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.gravity_body = math_utils.quat_apply_inverse(self.robot.data.root_quat_w, gravity_world)
 
         # 机械臂关节状态（4 DOF: body_yaw, boom, forearm, bucket）
-        # 注意：不包含轮子位置（轮子是连续旋转，位置累计值无意义）
         arm_joint_pos = self.robot.data.joint_pos[:, self._body_dof_idx]  # (N,4)
         arm_joint_vel = self.robot.data.joint_vel[:, self._body_dof_idx]  # (N,4)
 
-        # 轮子速度（6 轮，反映当前履带运动状态）
+        # 轮子速度
         wheel_vel = self.robot.data.joint_vel[:, self._wheel_dof_idx]  # (N,6)
 
         # 地形高度测量（RayCaster）
         height_data = (
             self._height_scanner.data.pos_w[:, 2].unsqueeze(1)
             - self._height_scanner.data.ray_hits_w[..., 2]
-            - cfg.base_height_offset
+            - cfg.base_height_offset 
         ).clip(-1.0, 1.0)
 
-        # 拼接观测向量（总维度: 3+3+3+3+4+4+6+6+221 = 253）
         obs = torch.cat((
-            base_lin_vel * cfg.lin_vel_scale,           # 3
-            base_ang_vel * cfg.ang_vel_scale,           # 3
-            self.gravity_body,                           # 3  倾斜感知
-            self.commands[:, :3] * self.commands_scale,  # 3  (lin_vel_x, lin_vel_y, ang_vel_yaw)
-            arm_joint_pos * cfg.dof_pos_scale,           # 4  机械臂当前姿态
-            arm_joint_vel * cfg.dof_vel_scale,           # 4  机械臂运动速度
-            wheel_vel * cfg.dof_vel_scale,               # 6  履带速度反馈
-            self.actions,                                # 6  上一步动作
-            height_data * cfg.height_scale,              # 221 地形高度图
+            base_lin_vel * cfg.lin_vel_scale,
+            base_ang_vel * cfg.ang_vel_scale,
+            self.gravity_body,
+            self.commands[:, :3] * self.commands_scale,
+            arm_joint_pos * cfg.dof_pos_scale,
+            arm_joint_vel * cfg.dof_vel_scale,
+            wheel_vel * cfg.dof_vel_scale,
+            self.actions,
+            height_data * cfg.height_scale,
         ), dim=-1)
 
         return {"policy": obs}
 
     #获取奖励（挖掘机特化：前进通行 + 朝向对齐 + 稳定性 + 动作平滑/能耗）
     def _get_rewards(self) -> torch.Tensor:
-        # ── 前进进度（主奖励：世界坐标 +y 方向速度） ──
-        # 这是核心驱动力：无论是靠履带还是机械臂辅助，只要向前推进就给奖励
+        # 前进进度（主奖励：世界坐标 +y 方向速度）
         forward_vel = self.robot.data.root_lin_vel_w[:, 1]  # +y 速度
         forward_progress = torch.clamp(forward_vel, 0.0, 3.0)
 
-        # ── 朝向对齐奖励（保持机体朝向 +y） ──
-        forward_dir = self.forwards  # 在 _get_dones 中已计算
+        # 朝向对齐奖励（保持机体朝向 +y）
+        forward_dir = self.forwards  # 在 _get_dones 中计算
         heading = torch.atan2(forward_dir[:, 1], forward_dir[:, 0])
         heading_error = self.commands[:, 3] - heading
         heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
         heading_reward = torch.exp(-torch.square(heading_error) / 0.25)
 
-        # ── 后退惩罚 ──
+        # 后退惩罚
         backward_penalty = -torch.clamp(-forward_vel, min=0.0)
 
-        # ── 稳定性惩罚（pitch / roll 倾斜） ──
+        # 稳定性惩罚（pitch / roll 倾斜）
         pitch_penalty = -torch.abs(self.gravity_body[:, 0])
         roll_penalty  = -torch.abs(self.gravity_body[:, 1])
 
-        # ── 动作平滑度惩罚（避免机械臂和履带突变引起晃动） ──
+        # 动作平滑度惩罚（避免机械臂和履带突变引起晃动）
         action_rate = -torch.sum(torch.square(self.actions - self.last_actions), dim=1)
 
-        # ── 机械臂能耗惩罚（弱惩罚：不需要时保持静止，但不阻止必要使用） ──
-        # 只惩罚 boom/forearm/bucket 动作，不包含履带和车体偏航
+        # 机械臂能耗惩罚（弱惩罚：不需要时保持静止，但不阻止必要使用）
         arm_actions = self.actions[:, 2:5]  # boom, forearm, bucket
         arm_effort = -torch.sum(torch.square(arm_actions), dim=1)
 
-        # ── 车体偏航居中 ──
+        # 车体偏航居中
         body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
         centering_reward = torch.exp(-torch.abs(body_yaw))
 
         total_reward = (
-            + 3.0 * forward_progress                       # 前进通行（核心目标）
-            + 1.0 * heading_reward                         # 朝向对齐
-            + 0.3 * backward_penalty                       # 后退惩罚
-            + 0.5 * pitch_penalty                          # 前后倾惩罚
-            + 0.5 * roll_penalty                           # 左右倾惩罚
-            + self.cfg.action_rate_scale * action_rate      # 动作平滑度
-            + self.cfg.arm_effort_scale * arm_effort        # 机械臂能耗
-            + 0.2 * centering_reward                       # 偏航居中
+            + 3.0 * forward_progress # 前进通行（核心目标）
+            + 1.0 * heading_reward # 朝向对齐
+            + 0.3 * backward_penalty # 后退惩罚
+            + 0.5 * pitch_penalty # 前后倾惩罚
+            + 0.5 * roll_penalty # 左右倾惩罚
+            + self.cfg.action_rate_scale * action_rate # 动作平滑度
+            # + self.cfg.arm_effort_scale * arm_effort # 机械臂能耗
+            # + 0.2 * centering_reward # 偏航居中
         )
 
         return total_reward
@@ -311,15 +304,12 @@ class ExcavatorPpoEnv(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
-        # ── heading 命令更新：根据当前机体朝向重新计算 ang_vel_yaw 命令 ──
-        self.forwards = math_utils.quat_apply(self.robot.data.root_quat_w, self.robot.data.FORWARD_VEC_B)
+        self.forwards = math_utils.quat_apply(self.robot.data.root_quat_w, self.robot.data.FORWARD_VEC_B) #计算前进方向向量（世界坐标系，_get_rewards使用）
         self._update_heading_command()
 
-        # 重力投影（供 _get_rewards 使用）
-        gravity_world = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
-        self.gravity_body = math_utils.quat_apply_inverse(self.robot.data.root_quat_w, gravity_world)
-
         # 翻车检测
+        gravity_world = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
+        self.gravity_body = math_utils.quat_apply_inverse(self.robot.data.root_quat_w, gravity_world) #重力投影（_get_rewards也用）
         flipped = self.gravity_body[:, 2] > -0.3
 
         # 虚空坠落检测
@@ -363,18 +353,12 @@ class ExcavatorPpoEnv(DirectRLEnv):
         default_root_state[:, 0] += random_x
         default_root_state[:, 1] += random_y
 
-        # 初始朝向完全随机（0~2π），目标方向始终为 +y
+        # 初始朝向随机（0~2π），目标方向始终为 +y
         random_yaw = torch.rand(n, device=self.device) * 2.0 * math.pi
         quat = math_utils.quat_from_angle_axis(random_yaw.unsqueeze(-1), self.up_dir).reshape(-1, 4)
         default_root_state[:, 3:7] = quat
 
         self.robot.write_root_state_to_sim(default_root_state, env_ids)
-
-        # 静态平台重置（已禁用）
-        # platform_offset = torch.tensor(self.cfg.platform_offset, device=self.device)
-        # default_platform_state = self.platform.data.default_root_state[env_ids].clone()
-        # default_platform_state[:, :3] = self._terrain.env_origins[env_ids] + platform_offset
-        # self.platform.write_root_state_to_sim(default_platform_state, env_ids)
 
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""
