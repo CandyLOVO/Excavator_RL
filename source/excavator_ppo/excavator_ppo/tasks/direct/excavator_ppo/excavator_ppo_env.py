@@ -328,6 +328,9 @@ class ExcavatorPpoEnv(DirectRLEnv):
     def _reset_idx(self, env_ids: Sequence[int] | None): #env_ids表示要重置的环境索引
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
+
+        # 重置关节内部状态（清除残留外力/力矩/速度缓冲，必须在写入新状态之前调用）
+        self.robot.reset(env_ids)
         super()._reset_idx(env_ids) #调用父类的重置方法
 
         # 重置动作缓冲区
@@ -340,7 +343,8 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         #重置环境参数流程：获取默认初始状态 -> 调整位置到环境原点 -> 写入模拟器
         joint_pos = self.robot.data.default_joint_pos[env_ids]
-        self.robot.write_joint_position_to_sim(joint_pos, None, env_ids)
+        joint_vel = self.robot.data.default_joint_vel[env_ids]  # 默认为零速度
+        self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)  # 同时写入位置和速度
 
         default_root_state = self.robot.data.default_root_state[env_ids]
         default_root_state[:, :3] += self._terrain.env_origins[env_ids]
