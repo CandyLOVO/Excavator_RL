@@ -4,7 +4,7 @@ from excavator_ppo.robots.excavator import EXCAVATOR_CFG  # 挖掘机机器人�
 from isaaclab.assets import ArticulationCfg, RigidObjectCfg #机器人配置、刚体物体配置
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg #交互场景配置，环境数量、环境间距、物理复制
-from isaaclab.sim import SimulationCfg #模拟配置，时间步长、渲染间隔
+from isaaclab.sim import SimulationCfg, PhysxCfg  #模拟配置，时间步长、渲染间隔、物理引擎配置
 from isaaclab.utils import configclass
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
@@ -17,7 +17,7 @@ import math
 class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 30.0
+    episode_length_s = 40.0  # 更长episode给挖掘机更多时间完成复杂地形
 
     # - spaces definition
     action_space = 6
@@ -25,14 +25,20 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     state_space = 0
 
     # simulation
-    sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
+    sim: SimulationCfg = SimulationCfg(
+        dt=1 / 120,
+        render_interval=decimation,
+        physx=PhysxCfg(
+            gpu_collision_stack_size=2**27,  # 128MB，修复 collisionStackSize overflow（默认2^26不够）
+        ),
+    )
 
     # robot(s)
     robot_cfg: ArticulationCfg = EXCAVATOR_CFG.replace(prim_path="/World/envs/env_.*/Robot") #替换所有副本路径
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=1024, 
+        num_envs=1024,  # RTX 4080 Laptop 12GB: 1024 环境平衡显存与吞吐
         env_spacing=10.0, 
         replicate_physics=True, 
     )
@@ -43,7 +49,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
         offset=RayCasterCfg.OffsetCfg(pos=(1.0, 0.0, 20.0)),  # 向前偏移 1m，高度 20m
         ray_alignment="yaw",
         pattern_cfg=patterns.GridPatternCfg(resolution=0.5, size=[8.0, 6.0]), #分辨率0.5m，范围8m×6m，17*13个采样点
-        debug_vis=False,
+        debug_vis=True,
         mesh_prim_paths=["/World/ground"],
     )
 
