@@ -57,7 +57,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     num_commands = 4
     heading_command = True      # heading 模式：从 heading 误差重新计算 ang_vel_yaw
     command_resampling_time = 10.0  # 命令重采样间隔 (s)
-    lin_vel_x_range = [0.5, 2.0]    # 前进速度 (m/s)
+    lin_vel_x_range = [0.5, 1.5]    # 前进速度 (m/s)，与轮子最大线速~1.47m/s匹配
     lin_vel_y_range = [0.0, 0.0]    # 侧向速度（m/s)
     ang_vel_yaw_range = [0.0, 0.0]  # 偏航角速度范围（heading 模式下由误差重算）
     heading_range = [math.pi / 2, math.pi / 2]  # 目标航向 +y（π/2 rad）    
@@ -145,7 +145,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     # initial_angle_range = [0.0, 0.25]
     position_action_scale = 1.5  # 机械臂位置控制缩放
     body_yaw_scale = 1.0 # 身体旋转控制缩放
-    action_scale = 1.5  # 履带速度控制缩放
+    action_scale = 6.0  # 履带速度控制缩放，v_max=w_limit*r_wheel=6rad/s×0.245m≈1.47m/s
     action_rate_scale = 0.01  # 动作平滑度惩罚系数
     arm_effort_scale = 0.01   # 机械臂能耗惩罚系数（弱惩罚，不阻止必要使用）
 

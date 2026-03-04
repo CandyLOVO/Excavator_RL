@@ -240,7 +240,9 @@ class ExcavatorPpoEnv(DirectRLEnv):
             self._height_scanner.data.pos_w[:, 2].unsqueeze(1)
             - self._height_scanner.data.ray_hits_w[..., 2]
             - cfg.base_height_offset 
-        ).clip(-1.0, 1.0)
+        )
+        height_data = torch.nan_to_num(height_data, nan=0.0, posinf=1.0, neginf=-1.0)  # 射线未命中时ray_hits为inf，防止NaN传播
+        height_data = height_data.clip(-1.0, 1.0)
 
         obs = torch.cat((
             base_lin_vel * cfg.lin_vel_scale,
@@ -254,32 +256,36 @@ class ExcavatorPpoEnv(DirectRLEnv):
             height_data * cfg.height_scale,
         ), dim=-1)
 
+        # 整体观测NaN/Inf保护，防止物理引擎异常污染网络权重
+        obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+        obs = torch.clamp(obs, -100.0, 100.0)
+
         return {"policy": obs}
 
     #获取奖励（挖掘机特化：前进通行 + 朝向对齐 + 稳定性 + 动作平滑/能耗）
     def _get_rewards(self) -> torch.Tensor:
-        # 前进进度（主奖励：世界坐标 +y 方向速度）
+        # 前进进度（主奖励：世界坐标 +y 方向速度）[0, 3.0]，与轮子最大线速匹配
         forward_vel = self.robot.data.root_lin_vel_w[:, 1]  # +y 速度
         forward_progress = torch.clamp(forward_vel, 0.0, 3.0)
 
-        # 朝向对齐奖励（保持机体朝向 +y）
+        # 朝向对齐奖励（保持机体朝向 +y）[0, 1.0]，与命令 heading 匹配
         forward_dir = self.forwards  # 在 _get_dones 中计算
         heading = torch.atan2(forward_dir[:, 1], forward_dir[:, 0])
         heading_error = self.commands[:, 3] - heading
         heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
         heading_reward = torch.exp(-torch.square(heading_error) / 0.25)
 
-        # 后退惩罚
+        # 后退惩罚[-3.0, 0]，与轮子最大线速匹配
         backward_penalty = -torch.clamp(-forward_vel, min=0.0)
 
-        # 稳定性惩罚（pitch / roll 倾斜）
+        # 稳定性惩罚（pitch / roll 倾斜）[-0.5, 0]，当挖掘机过于倾斜时惩罚，鼓励保持稳定
         pitch_penalty = -torch.abs(self.gravity_body[:, 0])
         roll_penalty  = -torch.abs(self.gravity_body[:, 1])
 
-        # 动作平滑度惩罚（避免机械臂和履带突变引起晃动）
+        # 动作平滑度惩罚（避免机械臂和履带突变引起晃动）[负无穷, 0]，与动作变化率匹配
         action_rate = -torch.sum(torch.square(self.actions - self.last_actions), dim=1)
 
-        # 机械臂能耗惩罚（弱惩罚：不需要时保持静止，但不阻止必要使用）
+        # 机械臂能耗惩罚（弱惩罚：不需要时保持静止，但不阻止必要使用）[负无穷, 0]，与机械臂动作幅度匹配
         arm_actions = self.actions[:, 2:5]  # boom, forearm, bucket
         arm_effort = -torch.sum(torch.square(arm_actions), dim=1)
 
@@ -288,8 +294,8 @@ class ExcavatorPpoEnv(DirectRLEnv):
         centering_reward = torch.exp(-torch.abs(body_yaw))
 
         total_reward = (
-            + 3.0 * forward_progress # 前进通行（核心目标）
-            + 1.0 * heading_reward # 朝向对齐
+            + 2.0 * forward_progress # 前进通行（核心目标）
+            + 2.0 * heading_reward # 朝向对齐
             + 0.3 * backward_penalty # 后退惩罚
             + 0.5 * pitch_penalty # 前后倾惩罚
             + 0.5 * roll_penalty # 左右倾惩罚
@@ -297,6 +303,8 @@ class ExcavatorPpoEnv(DirectRLEnv):
             # + self.cfg.arm_effort_scale * arm_effort # 机械臂能耗
             # + 0.2 * centering_reward # 偏航居中
         )
+
+        total_reward = torch.nan_to_num(total_reward, nan=0.0, posinf=0.0, neginf=0.0) #奖励NaN/Inf保护，当物理异常导致奖励计算出NaN/Inf时置零，防止污染网络权重
 
         return total_reward
 
