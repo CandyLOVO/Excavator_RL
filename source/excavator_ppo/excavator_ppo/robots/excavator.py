@@ -73,9 +73,9 @@ EXCAVATOR_CFG = ArticulationCfg(
                 "right_behind_wheel_joint",
             ],
             stiffness=0.0,       # 必须为0，代表不控制位置
-            damping=1000.0,      # 速度模式P增益：1000×6rad/s=6000N·m/轮，6轮共~147kN推力
-            effort_limit=8000.0, # 每轮最大力矩 8000N·m，为峰值力矩6000留余量
-            velocity_limit=6.0,  # 限制轮子最大角速度，v_max=6×0.245≈1.47m/s
+            damping=1000.0,      # 速度模式P增益：1000×8.2rad/s=8200N·m/轮，6轮共~200kN推力
+            effort_limit=10000.0, # 每轮最大力矩 10000N·m，为峰值力矩8200留余量
+            velocity_limit=8.5,  # 限制轮子最大角速度，v_max=8.2×0.245≈2.0m/s（留余量8.5）
         ),
     },
 )

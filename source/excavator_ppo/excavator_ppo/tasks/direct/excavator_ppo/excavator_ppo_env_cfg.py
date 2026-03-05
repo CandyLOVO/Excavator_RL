@@ -57,7 +57,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     num_commands = 4
     heading_command = True      # heading 模式：从 heading 误差重新计算 ang_vel_yaw
     command_resampling_time = 10.0  # 命令重采样间隔 (s)
-    lin_vel_x_range = [0.5, 1.5]    # 前进速度 (m/s)，与轮子最大线速~1.47m/s匹配
+    lin_vel_x_range = [0.5, 2.0]    # 前进速度 (m/s)，与轮子最大线速~2.0m/s匹配
     lin_vel_y_range = [0.0, 0.0]    # 侧向速度（m/s)
     ang_vel_yaw_range = [0.0, 0.0]  # 偏航角速度范围（heading 模式下由误差重算）
     heading_range = [math.pi / 2, math.pi / 2]  # 目标航向 +y（π/2 rad）    
@@ -143,17 +143,17 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     right_wheel_dof_name = ["right_wheel_joint", "right_front_wheel_joint", "right_behind_wheel_joint"] #4、5、6
     
     # initial_angle_range = [0.0, 0.25]
-    action_scale = 6.0  # 履带速度控制缩放，v_max = ω_limit × r_wheel = 6 rad/s × 0.245 m ≈ 1.47 m/s
+    action_scale = 8.2  # 履带速度控制缩放，v_max = ω_limit × r_wheel = 8.2 rad/s × 0.245 m ≈ 2.0 m/s
     position_action_scale = 1.5  # 机械臂位置控制缩放，每步最大位置增量 = 1.0 × dt（1/120*2） × 1.5 = 0.025 rad -> 1.5 rad/s
     body_yaw_scale = 1.0  # 车体偏航控制缩放，每步最大偏航增量 = 1.0 × dt × 1.0 = 0.0167 rad -> 1.0 rad/s
     action_rate_scale = 0.01  # 动作平滑度惩罚系数
     arm_effort_scale = 0.01   # 机械臂能耗惩罚系数（弱惩罚，不阻止必要使用）
 
     # 观测缩放因子 scale ≈ 1/典型最大值，让观测大致归一化到 [-1, 1] 范围
-    lin_vel_scale = 0.5        # 线速度缩放：v_max ≈ 1.47 m/s -> 0.74（可接受）
+    lin_vel_scale = 0.5        # 线速度缩放：v_max ≈ 2.0 m/s -> 1.0
     ang_vel_scale = 0.25       # 角速度缩放：典型 ±4 rad/s -> ±1.0
     dof_pos_scale = 1.0        # 关节位置缩放
     dof_vel_scale = 0.5        # 机械臂关节速度缩放：max ≈ 2.0 -> 1.0
-    wheel_vel_scale = 0.167    # 轮子速度缩放：velocity_limit = 6.0 rad/s -> 1.0（≈1/6）
+    wheel_vel_scale = 0.122    # 轮子速度缩放：velocity_limit = 8.2 rad/s -> 1.0（≈1/8.2）
     height_scale = 1.0         # 高度测量缩放（数据已 clip 到 [-1, 1]）
     base_height_offset = 0.5   # excavator.py 中的 init_state pos z 定义
