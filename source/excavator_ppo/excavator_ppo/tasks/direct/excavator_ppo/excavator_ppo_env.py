@@ -36,7 +36,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.pos_actions = self.robot.data.default_joint_pos[:, self._body_dof_idx].clone()
         self.default_joint_pos = self.robot.data.default_joint_pos.clone()  # 默认关节位置（观测用）
 
-        self.dt = self.cfg.sim.dt * self.cfg.decimation
+        self.dt = self.cfg.sim.dt * self.cfg.decimation #动作更新频率 = 模拟时间步长 * decimation
 
         # 动作缓冲区（观测中包含当前动作）
         self.actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
@@ -251,7 +251,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
             self.commands[:, :3] * self.commands_scale,
             arm_joint_pos * cfg.dof_pos_scale,
             arm_joint_vel * cfg.dof_vel_scale,
-            wheel_vel * cfg.dof_vel_scale,
+            wheel_vel * cfg.wheel_vel_scale,
             self.actions,
             height_data * cfg.height_scale,
         ), dim=-1)
@@ -264,9 +264,9 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
     #获取奖励（挖掘机特化：前进通行 + 朝向对齐 + 稳定性 + 动作平滑/能耗）
     def _get_rewards(self) -> torch.Tensor:
-        # 前进进度（主奖励：世界坐标 +y 方向速度）[0, 3.0]，与轮子最大线速匹配
+        # 前进进度（主奖励：世界坐标 +y 方向速度）[0, 1.5]，与轮子最大线速匹配
         forward_vel = self.robot.data.root_lin_vel_w[:, 1]  # +y 速度
-        forward_progress = torch.clamp(forward_vel, 0.0, 3.0)
+        forward_progress = torch.clamp(forward_vel, 0.0, 1.5)
 
         # 朝向对齐奖励（保持机体朝向 +y）[0, 1.0]，与命令 heading 匹配
         forward_dir = self.forwards  # 在 _get_dones 中计算
@@ -275,7 +275,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
         heading_reward = torch.exp(-torch.square(heading_error) / 0.25)
 
-        # 后退惩罚[-3.0, 0]，与轮子最大线速匹配
+        # 后退惩罚[-1.5, 0]，与轮子最大线速匹配
         backward_penalty = -torch.clamp(-forward_vel, min=0.0)
 
         # 稳定性惩罚（pitch / roll 倾斜）[-0.5, 0]，当挖掘机过于倾斜时惩罚，鼓励保持稳定
@@ -289,14 +289,14 @@ class ExcavatorPpoEnv(DirectRLEnv):
         arm_actions = self.actions[:, 2:5]  # boom, forearm, bucket
         arm_effort = -torch.sum(torch.square(arm_actions), dim=1)
 
-        # 车体偏航居中
+        # 车体偏航居中[0, 1]，鼓励偏航角接近零（相对于默认位置），保持机体朝向稳定，避免过度旋转
         body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
         centering_reward = torch.exp(-torch.abs(body_yaw))
 
         total_reward = (
-            + 2.0 * forward_progress # 前进通行（核心目标）
+            + 1.0 * forward_progress # 前进通行
             + 2.0 * heading_reward # 朝向对齐
-            + 0.3 * backward_penalty # 后退惩罚
+            + 0.5 * backward_penalty # 后退惩罚
             + 0.5 * pitch_penalty # 前后倾惩罚
             + 0.5 * roll_penalty # 左右倾惩罚
             + self.cfg.action_rate_scale * action_rate # 动作平滑度

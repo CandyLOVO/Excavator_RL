@@ -14,6 +14,7 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 1500        # 充分训练：1500 iter × 49152 ≈ 7370万样本
     save_interval = 100          # 每100轮保存，便于挑选最优模型
     experiment_name = "excavator_ppo"
+    clip_actions = 1.0           # 将动作裁剪到 [-1, 1]，确保 action_scale 等缩放系数语义正确
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_obs_normalization=False,
