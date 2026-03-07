@@ -61,8 +61,8 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     lin_vel_y_range = [0.0, 0.0]    # 侧向速度（m/s)
     ang_vel_yaw_range = [0.0, 0.0]  # 偏航角速度范围（heading 模式下由误差重算）
     heading_range = [math.pi / 2, math.pi / 2]  # 目标航向 +y（π/2 rad）    
-    heading_kp = 0.5            # 期望角速度的比例增益
-    max_ang_vel = 1.0           # 期望角速度截断上限 (rad/s)
+    heading_kp = 2.0            # 期望角速度的比例增益
+    max_ang_vel = 2.0           # 期望角速度截断上限 (rad/s)
 
     # 地形配置
     track_num_stages = 6          # 地形阶段数
@@ -89,7 +89,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
             ),
             "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
                 proportion=1.0 / 6,          # col 1 — 随机粗糙地形
-                noise_range=(0.02, 0.10),
+                noise_range=(0.10, 0.20), 
                 noise_step=0.02,
                 border_width=0.25, 
             ),
@@ -142,12 +142,15 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     left_wheel_dof_name = ["left_wheel_joint", "left_front_wheel_joint", "left_behind_wheel_joint"] #1、2、3
     right_wheel_dof_name = ["right_wheel_joint", "right_front_wheel_joint", "right_behind_wheel_joint"] #4、5、6
     
-    # initial_angle_range = [0.0, 0.25]
+    # 控制缩放
     action_scale = 8.2  # 履带速度控制缩放，v_max = ω_limit × r_wheel = 8.2 rad/s × 0.245 m ≈ 2.0 m/s
     position_action_scale = 1.5  # 机械臂位置控制缩放，每步最大位置增量 = 1.0 × dt（1/120*2） × 1.5 = 0.025 rad -> 1.5 rad/s
     body_yaw_scale = 1.0  # 车体偏航控制缩放，每步最大偏航增量 = 1.0 × dt × 1.0 = 0.0167 rad -> 1.0 rad/s
-    action_rate_scale = 0.01  # 动作平滑度惩罚系数
-    arm_effort_scale = 0.01   # 机械臂能耗惩罚系数（弱惩罚，不阻止必要使用）
+
+    # 速度跟踪奖励参数
+    tracking_sigma = 0.25      # exp(-error/sigma) 的衰减因子，越小奖励越集中于精确匹配
+    heading_sigma = 1.0        # 朝向对齐奖励的衰减因子（大值确保大角度偏差仍有有效梯度）
+    base_height_target = 0.5   # 期望底盘离地高度 (m)
 
     # 观测缩放因子 scale ≈ 1/典型最大值，让观测大致归一化到 [-1, 1] 范围
     lin_vel_scale = 0.5        # 线速度缩放：v_max ≈ 2.0 m/s -> 1.0
