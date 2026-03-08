@@ -61,8 +61,8 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     lin_vel_y_range = [0.0, 0.0]    # 侧向速度（m/s)
     ang_vel_yaw_range = [0.0, 0.0]  # 偏航角速度范围（heading 模式下由误差重算）
     heading_range = [math.pi / 2, math.pi / 2]  # 目标航向 +y（π/2 rad）    
-    heading_kp = 4.0            # 期望角速度的比例增益
-    max_ang_vel = 3.0           # 期望角速度截断上限 (rad/s)
+    heading_kp = 6.0            # 期望角速度的比例增益
+    max_ang_vel = 6.0           # 期望角速度截断上限(rad/s)，会受物理限制约束
 
     # 地形配置
     track_num_stages = 6          # 地形阶段数
@@ -130,8 +130,8 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="max",
             restitution_combine_mode="min",
-            static_friction=1.5,
-            dynamic_friction=1.2,
+            static_friction=1.0,
+            dynamic_friction=0.8,
             restitution=0.0,
         ),
         debug_vis=False,

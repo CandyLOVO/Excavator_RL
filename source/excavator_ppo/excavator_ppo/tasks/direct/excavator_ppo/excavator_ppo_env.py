@@ -174,8 +174,16 @@ class ExcavatorPpoEnv(DirectRLEnv):
         heading_error = self.commands[:, 3] - heading
         heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error)) #归一化偏航误差到(-π, π)
         self.heading_error = heading_error  # 存储供观测和奖励使用
+
+        error_sign = torch.sign(heading_error)
+        abs_error = torch.abs(heading_error)
+        enhanced_error = error_sign * torch.pow(abs_error, 0.6)
+        # self.commands[:, 2] = torch.clamp(
+        #     self.cfg.heading_kp * heading_error,
+        #     -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
+        # )  # 比例控制，增益与截断均由 cfg 配置
         self.commands[:, 2] = torch.clamp(
-            self.cfg.heading_kp * heading_error,
+            self.cfg.heading_kp * enhanced_error,
             -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
         )  # 比例控制，增益与截断均由 cfg 配置
 
@@ -439,10 +447,18 @@ class ExcavatorPpoEnv(DirectRLEnv):
             heading_error = self.commands[env_ids, 3] - random_yaw
             heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
             self.heading_error[env_ids] = heading_error  # 存储供重置后首帧观测使用
-            self.commands[env_ids, 2] = torch.clamp( #根据初始随机朝向计算初始ang_vel_yaw
-                self.cfg.heading_kp * heading_error,
+            # self.commands[env_ids, 2] = torch.clamp( #根据初始随机朝向计算初始ang_vel_yaw
+            #     self.cfg.heading_kp * heading_error,
+            #     -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
+            # )
+
+            error_sign = torch.sign(heading_error)
+            abs_error = torch.abs(heading_error)
+            enhanced_error = error_sign * torch.pow(abs_error, 0.6)
+            self.commands[env_ids, 2] = torch.clamp(
+                self.cfg.heading_kp * enhanced_error,
                 -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
-            )
+            )  # 比例控制，增益与截断均由 cfg 配置
 
             # # 重置时也按航向对齐度缩放前进速度指令
             # heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)
