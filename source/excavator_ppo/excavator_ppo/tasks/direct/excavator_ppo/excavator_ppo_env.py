@@ -303,8 +303,11 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         # 航向误差（由_update_heading_command在_get_dones中计算并存储）[0, 1]
         heading_error = self.heading_error
-        heading_reward = torch.exp(-torch.abs(heading_error) / cfg.heading_sigma)
-        # heading_reward = (1.0 + torch.cos(heading_error)) / 2.0 #使用cos值作为奖励，偏差90°->0，偏差0°->1
+        # 平滑 sigma 插值：0°处 sigma=0.25（梯度-4.0），≥90°处 sigma=0.6（梯度-1.67），中间线性过渡
+        abs_heading_err = torch.abs(heading_error)
+        blend = torch.clamp(abs_heading_err / (math.pi / 2), 0.0, 1.0)
+        heading_sigma = cfg.heading_sigma + blend * (cfg.heading_sigma_far - cfg.heading_sigma)
+        heading_reward = torch.exp(-abs_heading_err / heading_sigma)
 
         # heading_gate = torch.clamp(torch.cos(heading_error), min=0.0) #航向门控，偏差90°->0，偏差0°->1
         heading_gate = -2.0/math.pi * torch.abs(heading_error) + 1.0 #线性门控，偏差90°->0，偏差0°->1
