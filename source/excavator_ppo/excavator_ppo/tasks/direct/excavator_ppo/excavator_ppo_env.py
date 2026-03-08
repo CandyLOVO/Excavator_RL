@@ -46,7 +46,8 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         # 动作缓冲区（观测中包含当前动作）
         self.actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
-        self.last_actions = torch.zeros_like(self.actions) 
+        self.last_actions = torch.zeros_like(self.actions)
+        self.heading_error = torch.zeros(self.num_envs, device=self.device) #储存heading误差供观测和奖励使用
 
         # 命令缩放向量（用于观测归一化）
         self.commands_scale = torch.tensor(
@@ -172,14 +173,15 @@ class ExcavatorPpoEnv(DirectRLEnv):
         heading = torch.atan2(forward[:, 1], forward[:, 0])  # 当前机体朝向角(-π, π)
         heading_error = self.commands[:, 3] - heading
         heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error)) #归一化偏航误差到(-π, π)
+        self.heading_error = heading_error  # 存储供观测和奖励使用
         self.commands[:, 2] = torch.clamp(
             self.cfg.heading_kp * heading_error,
             -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
         )  # 比例控制，增益与截断均由 cfg 配置
 
-        # 当航向误差大时降低前进速度指令（软门控）
-        heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)
-        self.commands[:, 0] = self.raw_lin_vel_cmd * heading_alignment #cos门控：偏差90°→0，偏差0°→1
+        # # 当航向误差大时降低前进速度指令（软门控）
+        # heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)
+        # self.commands[:, 0] = self.raw_lin_vel_cmd * heading_alignment #cos门控：偏差90°->0，偏差0°->1
 
     #更新动作，得到动作张量的副本
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
@@ -261,7 +263,9 @@ class ExcavatorPpoEnv(DirectRLEnv):
             base_lin_vel * cfg.lin_vel_scale,
             base_ang_vel * cfg.ang_vel_scale,
             self.gravity_body,
-            self.commands[:, :3] * self.commands_scale,
+            self.commands[:, 0:1] * cfg.lin_vel_scale,    # 目标前进速度（经航向门控）
+            torch.sin(self.heading_error).unsqueeze(1),   # 航向误差 sin 分量（策略直接感知方向偏差）
+            torch.cos(self.heading_error).unsqueeze(1),   # 航向误差 cos 分量
             arm_joint_pos * cfg.dof_pos_scale,
             arm_joint_vel * cfg.dof_vel_scale,
             wheel_vel * cfg.wheel_vel_scale,
@@ -283,48 +287,45 @@ class ExcavatorPpoEnv(DirectRLEnv):
         lin_vel_error = torch.sum(torch.square(
             self.commands[:, :2] - self.robot.data.root_com_lin_vel_b[:, :2]
         ), dim=1)
-        tracking_lin_vel = torch.exp(-lin_vel_error / cfg.tracking_sigma)
+        tracking_lin_vel = torch.exp(-lin_vel_error / cfg.tracking_lin_vel_sigma)
 
-        # 角速度跟踪 [0, 1]
-        ang_vel_error = torch.square(
-            self.commands[:, 2] - self.robot.data.root_com_ang_vel_b[:, 2]
-        )
-        tracking_ang_vel = torch.exp(-ang_vel_error / cfg.tracking_sigma)
+        # 角速度跟踪奖励 [0, 1]
+        ang_vel_error = torch.square(self.commands[:, 2] - self.robot.data.root_com_ang_vel_b[:, 2])
+        tracking_ang_vel = torch.exp(-ang_vel_error / cfg.tracking_ang_vel_sigma)
 
-        # 朝向奖励 [0, 1]，sigma 大使大偏差仍有梯度
-        forward_dir = self.forwards  # 在 _get_dones 中计算
-        heading = torch.atan2(forward_dir[:, 1], forward_dir[:, 0])
-        heading_error = self.commands[:, 3] - heading
-        heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
+        # 航向误差（由_update_heading_command在_get_dones中计算并存储）[0, 1]
+        heading_error = self.heading_error
         heading_reward = torch.exp(-torch.abs(heading_error) / cfg.heading_sigma)
+        # heading_reward = (1.0 + torch.cos(heading_error)) / 2.0 #使用cos值作为奖励，偏差90°->0，偏差0°->1
 
-        heading_gate = torch.clamp(torch.cos(heading_error), min=0.0) #当前朝向与目标朝向偏差小于90°时，cos值为正，门控奖励为1
+        # heading_gate = torch.clamp(torch.cos(heading_error), min=0.0) #航向门控，偏差90°->0，偏差0°->1
+        heading_gate = -2.0/math.pi * torch.abs(heading_error) + 1.0 #线性门控，偏差90°->0，偏差0°->1
 
-        # 前进奖励 [0, +)，仅当朝向对齐时给予奖励
-        body_lin_vel = self.robot.data.root_com_lin_vel_b[:, 0] #前进速度（body x 方向）
-        forward_reward = torch.clamp(body_lin_vel, min=0.0)
+        # # 前进奖励，仅当朝向对齐时给予奖励 [0, +) #和tracking_lin_vel冲突
+        # body_lin_vel = self.robot.data.root_com_lin_vel_b[:, 0] #前进速度（body x 方向）
+        # forward_reward = torch.clamp(body_lin_vel, min=0.0)
 
-        # 转向方向奖励 [0, 1]，角速度方向与航向误差方向一致时给奖励
-        yaw_rate = self.robot.data.root_com_ang_vel_b[:, 2]
-        turning_direction = torch.sign(heading_error) * torch.sign(yaw_rate)  # 同向时 +1
-        turning_reward = torch.clamp(turning_direction, min=0.0) * torch.clamp(torch.abs(heading_error) - 0.1, min=0.0) # 偏差<0.1rad时不激励转向
+        # # 转向速度奖励 [0, +)，奖励正确方向的角速度大小 #和tracking_ang_vel职责冲突
+        # yaw_rate = self.robot.data.root_com_ang_vel_b[:, 2]
+        # correct_dir = torch.sign(heading_error) * torch.sign(yaw_rate) #方向一致为1,反向为-1
+        # turning_reward = torch.clamp(correct_dir, min=0.0) * torch.abs(yaw_rate) #方向正确时奖励角速度大小
 
-        # 后退惩罚 [负无穷, 0]
+        # 后退惩罚 (-, 0]
         body_forward_vel = self.robot.data.root_com_lin_vel_b[:, 0]
         forward_vel = self.robot.data.root_lin_vel_w[:, 1] #前进速度（world y 方向）
         backward_body_penalty = -torch.clamp(-body_forward_vel, min=0.0)
         backward_world_penalty = -torch.clamp(-forward_vel, min=0.0)
 
-        # 倾覆惩罚 [负无穷, 0]
+        # 倾覆惩罚 (-, 0]
         orientation_penalty = -torch.sum(torch.square(self.gravity_body[:, :2]), dim=1)
 
-        # 垂直线速度惩罚 [负无穷, 0]
+        # 垂直线速度惩罚 (-, 0]
         lin_vel_z_penalty = -torch.square(self.robot.data.root_com_lin_vel_b[:, 2])
 
-        # 角速度 xy 惩罚 [负无穷, 0]
+        # 角速度 xy 惩罚 (-, 0]
         ang_vel_xy_penalty = -torch.sum(torch.square(self.robot.data.root_com_ang_vel_b[:, :2]), dim=1)
 
-        # 底盘高度奖励 [负无穷, 0]
+        # 底盘高度奖励 (-, 0]
         base_height = self.robot.data.root_pos_w[:, 2]
         terrain_below = self._height_scanner.data.ray_hits_w[..., 2]
         terrain_below = torch.nan_to_num(terrain_below, nan=-10.0, posinf=-10.0, neginf=-10.0) 
@@ -332,14 +333,14 @@ class ExcavatorPpoEnv(DirectRLEnv):
         clearance = base_height - terrain_height_est  # 实际离地高度
         base_height_reward = -torch.square(clearance - cfg.base_height_target) #(期望离地高度-实际离地高度)^2
 
-        # 动作平滑度 [负无穷, 0]
+        # 动作平滑度 (-, 0]
         action_rate = -torch.sum(torch.square(self.actions - self.last_actions), dim=1)
 
         # # 机械臂收纳奖励 [0, 1]
         # arm_joint_pos = self.robot.data.joint_pos[:, self._body_dof_idx[1:]]
         # arm_safe_reward = torch.exp(-torch.sum(torch.square(arm_joint_pos - self.arm_stowed_pos), dim=1)) #偏差越小奖励越大
 
-        # 机械臂能耗惩罚 [负无穷, 0]，弱惩罚
+        # 机械臂能耗惩罚 (-, 0]，弱惩罚
         arm_actions = self.actions[:, 2:5]
         arm_effort = -torch.sum(torch.square(arm_actions), dim=1)
 
@@ -351,21 +352,18 @@ class ExcavatorPpoEnv(DirectRLEnv):
         alive_reward = torch.ones(self.num_envs, device=self.device)
 
         total_reward = (
-            + 1.0 * tracking_lin_vel * heading_gate # 线速度跟踪 [0, 1]
-            + 1.5 * tracking_ang_vel # 角速度跟踪 [0, 1]
-            + 3.0 * heading_reward # 朝向对齐 [0, 1]
-            + 1.0 * forward_reward * heading_gate # 前进奖励 [0, +)
-            + 2.0 * turning_reward # 转向方向奖励 [0, +)
-            # + 1.0 * backward_world_penalty # 后退惩罚，world [负无穷, 0]
-            # + 0.5 * backward_body_penalty # 后退惩罚，body [负无穷, 0]
-            + 0.5 * orientation_penalty # 倾覆惩罚 [负无穷, 0]
-            # + 0.2 * lin_vel_z_penalty # 减垂直速度成分，减少弹跳 [负无穷, 0]
-            # + 0.05 * ang_vel_xy_penalty # xy角速度惩罚 [负无穷, 0]
-            # + 0.15 * base_height_reward # 底盘高度保持 [负无穷, 0]
-            # + 0.01 * action_rate # 动作平滑度 [负无穷, 0]
-            # + 0.15 * arm_safe_reward # 机械臂收纳位置 [0, 1]
-            # + 0.01 * arm_effort # 机械臂能耗 [负无穷, 0]
-            + 0.2 * centering_reward # 车体偏航居中（降权，避免淹没转向信号）[0, 1]
+            + 1.0 * tracking_lin_vel * heading_gate # 线速度跟踪，航向对齐时才计入 [0, 1]
+            + 2.5 * tracking_ang_vel # 角速度跟踪 [0, 1]
+            + 4.0 * heading_reward # 朝向对齐 [0, 1]
+            + 1.0 * backward_world_penalty # 后退惩罚，world (-, 0]
+            + 0.5 * backward_body_penalty # 后退惩罚，body (-, 0]
+            + 0.5 * orientation_penalty # 倾覆惩罚 (-, 0]
+            # + 0.2 * lin_vel_z_penalty # 减垂直速度成分，减少弹跳 (-, 0]
+            # + 0.05 * ang_vel_xy_penalty # xy角速度惩罚 (-, 0]
+            # + 0.15 * base_height_reward # 底盘高度保持 (-, 0]
+            # + 0.01 * action_rate # 动作平滑度 (-, 0]
+            # + 0.01 * arm_effort # 机械臂能耗 (-, 0]
+            # + 0.3 * centering_reward # 车体偏航居中 [0, 1]
             # + 0.5 * alive_reward  # 存活奖励 cfg.alive_reward_scale/步
         )
 
@@ -431,7 +429,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         default_root_state[:, 1] += random_y
 
         # 初始朝向随机，以目标航向为中心 ±π/2，确保最大偏差不超过 90°
-        random_yaw = self.commands[env_ids, 3] + (torch.rand(n, device=self.device) - 0.5) * math.pi
+        random_yaw = self.commands[env_ids, 3] + (torch.rand(n, device=self.device)) * math.pi 
         default_root_state[:, 3:7] = math_utils.quat_from_angle_axis(random_yaw.unsqueeze(-1), self.up_dir).reshape(-1, 4) #根据随机朝向计算初始四元数
 
         self.robot.write_root_state_to_sim(default_root_state, env_ids)
@@ -440,13 +438,15 @@ class ExcavatorPpoEnv(DirectRLEnv):
         if self.cfg.heading_command:
             heading_error = self.commands[env_ids, 3] - random_yaw
             heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
+            self.heading_error[env_ids] = heading_error  # 存储供重置后首帧观测使用
             self.commands[env_ids, 2] = torch.clamp( #根据初始随机朝向计算初始ang_vel_yaw
                 self.cfg.heading_kp * heading_error,
                 -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
             )
-            # 重置时也按航向对齐度缩放前进速度指令
-            heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)
-            self.commands[env_ids, 0] = self.raw_lin_vel_cmd[env_ids] * heading_alignment
+
+            # # 重置时也按航向对齐度缩放前进速度指令
+            # heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)
+            # self.commands[env_ids, 0] = self.raw_lin_vel_cmd[env_ids] * heading_alignment
 
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""

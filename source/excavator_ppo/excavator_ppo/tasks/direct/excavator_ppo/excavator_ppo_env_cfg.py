@@ -61,8 +61,8 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     lin_vel_y_range = [0.0, 0.0]    # 侧向速度（m/s)
     ang_vel_yaw_range = [0.0, 0.0]  # 偏航角速度范围（heading 模式下由误差重算）
     heading_range = [math.pi / 2, math.pi / 2]  # 目标航向 +y（π/2 rad）    
-    heading_kp = 2.0            # 期望角速度的比例增益
-    max_ang_vel = 2.0           # 期望角速度截断上限 (rad/s)
+    heading_kp = 4.0            # 期望角速度的比例增益
+    max_ang_vel = 3.0           # 期望角速度截断上限 (rad/s)
 
     # 地形配置
     track_num_stages = 6          # 地形阶段数
@@ -148,8 +148,9 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     body_yaw_scale = 1.0  # 车体偏航控制缩放，每步最大偏航增量 = 1.0 × dt × 1.0 = 0.0167 rad -> 1.0 rad/s
 
     # 速度跟踪奖励参数
-    tracking_sigma = 0.25      # exp(-error/sigma) 的衰减因子，越小奖励越集中于精确匹配
-    heading_sigma = 1.0        # 朝向对齐奖励的衰减因子（大值确保大角度偏差仍有有效梯度）
+    tracking_lin_vel_sigma = 0.5      # exp(-error/sigma) 的衰减因子，越小奖励越集中于精确匹配
+    tracking_ang_vel_sigma = 1.0  # 角速度跟踪奖励衰减因子
+    heading_sigma = 0.6       # 朝向对齐奖励的衰减因子
     base_height_target = 0.5   # 期望底盘离地高度 (m)
 
     # 观测缩放因子 scale ≈ 1/典型最大值，让观测大致归一化到 [-1, 1] 范围
