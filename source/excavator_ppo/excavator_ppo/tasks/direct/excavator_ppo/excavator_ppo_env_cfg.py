@@ -150,7 +150,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     # 速度跟踪奖励参数
     tracking_lin_vel_sigma = 0.5      # exp(-error/sigma) 的衰减因子，越小奖励越集中于精确匹配
     tracking_ang_vel_sigma = 1.0  # 角速度跟踪奖励衰减因子
-    heading_sigma = 0.6       # 朝向对齐奖励的衰减因子
+    heading_sigma = 0.25       # 朝向对齐奖励的衰减因子
     base_height_target = 0.5   # 期望底盘离地高度 (m)
 
     # 观测缩放因子 scale ≈ 1/典型最大值，让观测大致归一化到 [-1, 1] 范围
