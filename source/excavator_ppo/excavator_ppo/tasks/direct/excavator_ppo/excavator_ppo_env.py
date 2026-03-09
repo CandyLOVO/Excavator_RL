@@ -175,18 +175,18 @@ class ExcavatorPpoEnv(DirectRLEnv):
         heading_error = self.commands[:, 3] - heading
         heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error)) #归一化偏航误差到(-π, π)
         self.heading_error = heading_error  # 存储供观测和奖励使用
-        # self.commands[:, 2] = torch.clamp(
-        #     self.cfg.heading_kp * heading_error,
-        #     -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
-        # )  # 比例控制，增益与截断均由 cfg 配置
-
-        error_sign = torch.sign(heading_error) #会使挖掘机超过目标方向后再前进
-        abs_error = torch.abs(heading_error)
-        enhanced_error = error_sign * torch.pow(abs_error, 0.8)       
         self.commands[:, 2] = torch.clamp(
-            self.cfg.heading_kp * enhanced_error,
+            self.cfg.heading_kp * heading_error,
             -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
         )  # 比例控制，增益与截断均由 cfg 配置
+
+        # error_sign = torch.sign(heading_error) #会使挖掘机超过目标方向后再前进
+        # abs_error = torch.abs(heading_error)
+        # enhanced_error = error_sign * torch.pow(abs_error, 0.8)       
+        # self.commands[:, 2] = torch.clamp(
+        #     self.cfg.heading_kp * enhanced_error,
+        #     -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
+        # )  # 比例控制，增益与截断均由 cfg 配置
 
         # # 当航向误差大时降低前进速度指令（软门控）#只留下heading_gate
         # heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)
@@ -366,8 +366,8 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         total_reward = (
             + 1.0 * tracking_lin_vel * heading_gate # 线速度跟踪，航向对齐时才计入 [0, 1]
-            + 2.0 * tracking_ang_vel # 角速度跟踪 [0, 1]
-            + 3.0 * heading_reward # 朝向对齐 [0, 1]
+            + 0.3 * tracking_ang_vel # 角速度跟踪 [0, 1]
+            + 2.5 * heading_reward # 朝向对齐 [0, 1]
             + 1.0 * backward_world_penalty # 后退惩罚，world (-, 0]
             + 0.5 * backward_body_penalty # 后退惩罚，body (-, 0]
             + 0.5 * orientation_penalty # 倾覆惩罚 (-, 0]
@@ -459,18 +459,18 @@ class ExcavatorPpoEnv(DirectRLEnv):
             heading_error = self.commands[env_ids, 3] - random_yaw
             heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
             self.heading_error[env_ids] = heading_error  # 存储供重置后首帧观测使用
-            # self.commands[env_ids, 2] = torch.clamp( #根据初始随机朝向计算初始ang_vel_yaw
-            #     self.cfg.heading_kp * heading_error,
-            #     -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
-            # )
-
-            error_sign = torch.sign(heading_error)
-            abs_error = torch.abs(heading_error)
-            enhanced_error = error_sign * torch.pow(abs_error, 0.8)
-            self.commands[env_ids, 2] = torch.clamp(
-                self.cfg.heading_kp * enhanced_error,
+            self.commands[env_ids, 2] = torch.clamp( #根据初始随机朝向计算初始ang_vel_yaw
+                self.cfg.heading_kp * heading_error,
                 -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
-            )  # 比例控制，增益与截断均由 cfg 配置
+            )
+
+            # error_sign = torch.sign(heading_error)
+            # abs_error = torch.abs(heading_error)
+            # enhanced_error = error_sign * torch.pow(abs_error, 0.8)
+            # self.commands[env_ids, 2] = torch.clamp(
+            #     self.cfg.heading_kp * enhanced_error,
+            #     -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
+            # )  # 比例控制，增益与截断均由 cfg 配置
 
             # # 重置时也按航向对齐度缩放前进速度指令
             # heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)
