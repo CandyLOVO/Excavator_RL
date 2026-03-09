@@ -9,8 +9,8 @@ EXCAVATOR_CFG = ArticulationCfg(
         #刚体属性
         rigid_props = sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False, #启用重力
-            linear_damping=0.1, #线性阻尼，防止无阻力飞行
-            angular_damping=0.05, #角阻尼，抑制旋转漂移
+            linear_damping=0.0, #线性阻尼，防止无阻力飞行
+            angular_damping=0.0, #角阻尼，抑制旋转漂移
             max_linear_velocity=10.0, #最大线速度（挖掘机合理上限）
             max_angular_velocity=20.0, #最大角速度
             max_depenetration_velocity=10.0, #最大穿透修正速度：10m/s的速度来修正穿透

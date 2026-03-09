@@ -61,8 +61,8 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     lin_vel_y_range = [0.0, 0.0]    # 侧向速度（m/s)
     ang_vel_yaw_range = [0.0, 0.0]  # 偏航角速度范围（heading 模式下由误差重算）
     heading_range = [math.pi / 2, math.pi / 2]  # 目标航向 +y（π/2 rad）    
-    heading_kp = 6.0            # 期望角速度的比例增益
-    max_ang_vel = 6.0           # 期望角速度截断上限(rad/s)，会受物理限制约束
+    heading_kp = 2.8            # 期望角速度的比例增益
+    max_ang_vel = 2.5           # 期望角速度截断上限(rad/s)，会受物理限制约束
 
     # 地形配置
     track_num_stages = 6          # 地形阶段数
@@ -156,7 +156,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
 
     # 观测缩放因子 scale ≈ 1/典型最大值，让观测大致归一化到 [-1, 1] 范围
     lin_vel_scale = 0.5        # 线速度缩放：v_max ≈ 2.0 m/s -> 1.0
-    ang_vel_scale = 0.25       # 角速度缩放：典型 ±4 rad/s -> ±1.0
+    ang_vel_scale = 0.38       # 角速度缩放
     dof_pos_scale = 1.0        # 关节位置缩放
     dof_vel_scale = 0.5        # 机械臂关节速度缩放：max ≈ 2.0 -> 1.0
     wheel_vel_scale = 0.122    # 轮子速度缩放：velocity_limit = 8.2 rad/s -> 1.0（≈1/8.2）
