@@ -48,6 +48,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
         self.last_actions = torch.zeros_like(self.actions)
         self.heading_error = torch.zeros(self.num_envs, device=self.device) #储存heading误差供观测和奖励使用
+        self.base_link_lin_vel_b = torch.zeros(self.num_envs, 3, device=self.device)  # 底盘 link origin 线速度（体坐标系）
 
         # 命令缩放向量（用于观测归一化）
         self.commands_scale = torch.tensor(
@@ -174,18 +175,18 @@ class ExcavatorPpoEnv(DirectRLEnv):
         heading_error = self.commands[:, 3] - heading
         heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error)) #归一化偏航误差到(-π, π)
         self.heading_error = heading_error  # 存储供观测和奖励使用
-        self.commands[:, 2] = torch.clamp(
-            self.cfg.heading_kp * heading_error,
-            -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
-        )  # 比例控制，增益与截断均由 cfg 配置
-
-        # error_sign = torch.sign(heading_error) #会使挖掘机超过目标方向后再前进
-        # abs_error = torch.abs(heading_error)
-        # enhanced_error = error_sign * torch.pow(abs_error, 0.8)       
         # self.commands[:, 2] = torch.clamp(
-        #     self.cfg.heading_kp * enhanced_error,
+        #     self.cfg.heading_kp * heading_error,
         #     -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
         # )  # 比例控制，增益与截断均由 cfg 配置
+
+        error_sign = torch.sign(heading_error) #会使挖掘机超过目标方向后再前进
+        abs_error = torch.abs(heading_error)
+        enhanced_error = error_sign * torch.pow(abs_error, 0.8)       
+        self.commands[:, 2] = torch.clamp(
+            self.cfg.heading_kp * enhanced_error,
+            -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
+        )  # 比例控制，增益与截断均由 cfg 配置
 
         # # 当航向误差大时降低前进速度指令（软门控）#只留下heading_gate
         # heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)
@@ -244,8 +245,8 @@ class ExcavatorPpoEnv(DirectRLEnv):
         cfg = self.cfg
 
         # 本体线速度 / 角速度（body frame）
-        base_lin_vel = self.robot.data.root_com_lin_vel_b  # (N,3)
-        base_ang_vel = self.robot.data.root_com_ang_vel_b  # (N,3)
+        base_lin_vel = self.base_link_lin_vel_b  # (N,3) link origin 速度，非质心速度，避免转向时质心偏移产生寄生分量
+        base_ang_vel = self.robot.data.root_com_ang_vel_b  # (N,3) 角速度对刚体上所有点一致，无需修正
 
         # 重力投影（body frame）
         gravity_world = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
@@ -293,7 +294,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         # 线速度跟踪 [0, 1]
         lin_vel_error = torch.sum(torch.square(
-            self.commands[:, :2] - self.robot.data.root_com_lin_vel_b[:, :2]
+            self.commands[:, :2] - self.base_link_lin_vel_b[:, :2]
         ), dim=1)
         tracking_lin_vel = torch.exp(-lin_vel_error / cfg.tracking_lin_vel_sigma)
 
@@ -314,7 +315,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         heading_gate = torch.exp(-torch.square(heading_error) / (2 * 0.5**2)) #高斯门控，偏差0.5 rad (~28°)处约为0.61，偏差90°处约为0.0019
 
         # # 前进奖励，仅当朝向对齐时给予奖励 [0, +) #和tracking_lin_vel冲突
-        # body_lin_vel = self.robot.data.root_com_lin_vel_b[:, 0] #前进速度（body x 方向）
+        # body_lin_vel = self.base_link_lin_vel_b[:, 0] #前进速度（body x 方向）
         # forward_reward = torch.clamp(body_lin_vel, min=0.0)
 
         # # 转向速度奖励 [0, +)，奖励正确方向的角速度大小 #和tracking_ang_vel职责冲突
@@ -323,7 +324,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # turning_reward = torch.clamp(correct_dir, min=0.0) * torch.abs(yaw_rate) #方向正确时奖励角速度大小
 
         # 后退惩罚 (-, 0]
-        body_forward_vel = self.robot.data.root_com_lin_vel_b[:, 0]
+        body_forward_vel = self.base_link_lin_vel_b[:, 0]
         forward_vel = self.robot.data.root_lin_vel_w[:, 1] #前进速度（world y 方向）
         backward_body_penalty = -torch.clamp(-body_forward_vel, min=0.0)
         backward_world_penalty = -torch.clamp(-forward_vel, min=0.0)
@@ -332,7 +333,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         orientation_penalty = -torch.sum(torch.square(self.gravity_body[:, :2]), dim=1)
 
         # 垂直线速度惩罚 (-, 0]
-        lin_vel_z_penalty = -torch.square(self.robot.data.root_com_lin_vel_b[:, 2])
+        lin_vel_z_penalty = -torch.square(self.base_link_lin_vel_b[:, 2])
 
         # 角速度 xy 惩罚 (-, 0]
         ang_vel_xy_penalty = -torch.sum(torch.square(self.robot.data.root_com_ang_vel_b[:, :2]), dim=1)
@@ -365,7 +366,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         total_reward = (
             + 1.0 * tracking_lin_vel * heading_gate # 线速度跟踪，航向对齐时才计入 [0, 1]
-            + 2.5 * tracking_ang_vel # 角速度跟踪 [0, 1]
+            + 2.0 * tracking_ang_vel # 角速度跟踪 [0, 1]
             + 3.0 * heading_reward # 朝向对齐 [0, 1]
             + 1.0 * backward_world_penalty # 后退惩罚，world (-, 0]
             + 0.5 * backward_body_penalty # 后退惩罚，body (-, 0]
@@ -389,6 +390,13 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         self.forwards = math_utils.quat_apply(self.robot.data.root_quat_w, self.robot.data.FORWARD_VEC_B) #计算前进方向向量（世界坐标系，_get_rewards使用）
         self._update_heading_command()
+
+        # 计算底盘几何中心（link origin）线速度，避免整机质心偏移导致转向时的寄生横向速度
+        # body_link_vel_w 使用 v_link = v_com + ω × (-r_com) 从质心速度反推 link origin 速度
+        root_link_vel_w = self.robot.data.body_link_vel_w[:, 0, :3]  # (N, 3) root link origin 线速度（世界系）
+        self.base_link_lin_vel_b = math_utils.quat_apply_inverse(
+            self.robot.data.root_quat_w, root_link_vel_w
+        )  # (N, 3) 转换到体坐标系
 
         # 翻车检测
         gravity_world = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
@@ -451,18 +459,18 @@ class ExcavatorPpoEnv(DirectRLEnv):
             heading_error = self.commands[env_ids, 3] - random_yaw
             heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
             self.heading_error[env_ids] = heading_error  # 存储供重置后首帧观测使用
-            self.commands[env_ids, 2] = torch.clamp( #根据初始随机朝向计算初始ang_vel_yaw
-                self.cfg.heading_kp * heading_error,
-                -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
-            )
-
-            # error_sign = torch.sign(heading_error)
-            # abs_error = torch.abs(heading_error)
-            # enhanced_error = error_sign * torch.pow(abs_error, 0.8)
-            # self.commands[env_ids, 2] = torch.clamp(
-            #     self.cfg.heading_kp * enhanced_error,
+            # self.commands[env_ids, 2] = torch.clamp( #根据初始随机朝向计算初始ang_vel_yaw
+            #     self.cfg.heading_kp * heading_error,
             #     -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
-            # )  # 比例控制，增益与截断均由 cfg 配置
+            # )
+
+            error_sign = torch.sign(heading_error)
+            abs_error = torch.abs(heading_error)
+            enhanced_error = error_sign * torch.pow(abs_error, 0.8)
+            self.commands[env_ids, 2] = torch.clamp(
+                self.cfg.heading_kp * enhanced_error,
+                -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
+            )  # 比例控制，增益与截断均由 cfg 配置
 
             # # 重置时也按航向对齐度缩放前进速度指令
             # heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)
