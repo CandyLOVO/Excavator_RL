@@ -310,7 +310,8 @@ class ExcavatorPpoEnv(DirectRLEnv):
         heading_reward = torch.exp(-abs_heading_err / heading_sigma)
 
         # heading_gate = torch.clamp(torch.cos(heading_error), min=0.0) #航向门控，偏差90°->0，偏差0°->1
-        heading_gate = -2.0/math.pi * torch.abs(heading_error) + 1.0 #线性门控，偏差90°->0，偏差0°->1
+        # heading_gate = -2.0/math.pi * torch.abs(heading_error) + 1.0 #线性门控，偏差90°->0，偏差0°->1
+        heading_gate = torch.exp(-torch.square(heading_error) / (2 * 0.5**2)) #高斯门控，偏差0.5 rad (~28°)处约为0.61，偏差90°处约为0.0019
 
         # # 前进奖励，仅当朝向对齐时给予奖励 [0, +) #和tracking_lin_vel冲突
         # body_lin_vel = self.robot.data.root_com_lin_vel_b[:, 0] #前进速度（body x 方向）
@@ -365,7 +366,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         total_reward = (
             + 1.0 * tracking_lin_vel * heading_gate # 线速度跟踪，航向对齐时才计入 [0, 1]
             + 2.5 * tracking_ang_vel # 角速度跟踪 [0, 1]
-            + 4.0 * heading_reward # 朝向对齐 [0, 1]
+            + 3.0 * heading_reward # 朝向对齐 [0, 1]
             + 1.0 * backward_world_penalty # 后退惩罚，world (-, 0]
             + 0.5 * backward_body_penalty # 后退惩罚，body (-, 0]
             + 0.5 * orientation_penalty # 倾覆惩罚 (-, 0]
