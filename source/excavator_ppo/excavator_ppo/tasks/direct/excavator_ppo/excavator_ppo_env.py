@@ -304,11 +304,10 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         # 航向误差（由_update_heading_command在_get_dones中计算并存储）[0, 1]
         heading_error = self.heading_error
-        # 平滑 sigma 插值：0°处 sigma=0.25（梯度-4.0），≥90°处 sigma=0.6（梯度-1.67），中间线性过渡
-        abs_heading_err = torch.abs(heading_error)
-        blend = torch.clamp(abs_heading_err / (math.pi / 4), 0.0, 1.0)
-        heading_sigma = cfg.heading_sigma + blend * (cfg.heading_sigma_far - cfg.heading_sigma)
-        heading_reward = torch.exp(-abs_heading_err / heading_sigma)
+        heading_error_abs = torch.abs(self.heading_error)
+        reward_far = torch.exp(-heading_error_abs / cfg.heading_sigma_far)  # 远区引导 (宽)
+        reward_near = torch.exp(-heading_error_abs / cfg.heading_sigma_near) # 近区微调 (窄，梯度极大)
+        heading_reward = 0.4 * reward_far + 0.6 * reward_near
 
         # heading_gate = torch.clamp(torch.cos(heading_error), min=0.0) #航向门控，偏差90°->0，偏差0°->1
         # heading_gate = -2.0/math.pi * torch.abs(heading_error) + 1.0 #线性门控，偏差90°->0，偏差0°->1
@@ -366,8 +365,8 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         total_reward = (
             + 1.0 * tracking_lin_vel * heading_gate # 线速度跟踪，航向对齐时才计入 [0, 1]
-            + 0.3 * tracking_ang_vel # 角速度跟踪 [0, 1]
-            + 2.5 * heading_reward # 朝向对齐 [0, 1]
+            + 0.5 * tracking_ang_vel # 角速度跟踪 [0, 1]
+            + 3.0 * heading_reward # 朝向对齐 [0, 1]
             + 1.0 * backward_world_penalty # 后退惩罚，world (-, 0]
             + 0.5 * backward_body_penalty # 后退惩罚，body (-, 0]
             + 0.5 * orientation_penalty # 倾覆惩罚 (-, 0]

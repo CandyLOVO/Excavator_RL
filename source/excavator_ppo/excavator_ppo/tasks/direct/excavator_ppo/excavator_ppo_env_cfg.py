@@ -66,8 +66,8 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
 
     # 地形配置
     track_num_stages = 6          # 地形阶段数
-    track_width = 80.0            # 赛道宽度 (m)
-    track_section_length = 40.0   # 每段地形沿 y 方向长度 (m)
+    track_width = 40.0            # 赛道宽度 (m)
+    track_section_length = 20.0   # 每段地形沿 y 方向长度 (m)
     track_difficulty = 0.5        # 地形难度（0.0~1.0），控制随机粗糙度、障碍密度/高度、波浪振幅、台阶高度等参数
     _border_width = 0.0           # 地形边界平坦区 (m)
 
@@ -150,8 +150,8 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     # 速度跟踪奖励参数
     tracking_lin_vel_sigma = 0.5      # exp(-error/sigma) 的衰减因子，越小奖励越集中于精确匹配
     tracking_ang_vel_sigma = 1.0  # 角速度跟踪奖励衰减因子
-    heading_sigma = 0.25       # 朝向对齐奖励的衰减因子（近区，<45°精确对齐）
-    heading_sigma_far = 0.6    # 朝向对齐奖励的衰减因子（远区，≥45°持续梯度）
+    heading_sigma_near = 0.15       # 朝向对齐奖励的衰减因子（近区，<45°精确对齐）
+    heading_sigma_far = 1.0    # 朝向对齐奖励的衰减因子（远区，≥45°持续梯度）
     base_height_target = 0.5   # 期望底盘离地高度 (m)
 
     # 观测缩放因子 scale ≈ 1/典型最大值，让观测大致归一化到 [-1, 1] 范围
