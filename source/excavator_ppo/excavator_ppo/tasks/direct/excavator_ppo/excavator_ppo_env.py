@@ -7,7 +7,7 @@ from collections.abc import Sequence
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
-from isaaclab.sensors import RayCaster
+from isaaclab.sensors import RayCaster, ContactSensor
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import sample_uniform
 
@@ -36,12 +36,6 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.pos_actions = self.robot.data.default_joint_pos[:, self._body_dof_idx].clone()
         self.default_joint_pos = self.robot.data.default_joint_pos.clone()  # 默认关节位置（观测用）
 
-        # # 机械臂“收起”目标位置，设为关节行程中点
-        # arm_idx = self._body_dof_idx[1:]  # boom, forearm, bucket
-        # arm_lower = self.dof_pos_lower_limits[arm_idx]
-        # arm_upper = self.dof_pos_upper_limits[arm_idx]
-        # self.arm_stowed_pos = ((arm_lower + arm_upper) / 2.0).unsqueeze(0)  # (1, 3)
-
         self.dt = self.cfg.sim.dt * self.cfg.decimation #动作更新频率 = 模拟时间步长 * decimation
 
         # 动作缓冲区（观测中包含当前动作）
@@ -50,6 +44,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.heading_error = torch.zeros(self.num_envs, device=self.device) #储存heading误差供观测和奖励使用
         self.base_link_lin_vel_b = torch.zeros(self.num_envs, 3, device=self.device)  # 底盘 link origin 线速度（体坐标系）
         self.root_link_vel_w = torch.zeros(self.num_envs, 3, device=self.device)  # 底盘 link origin 线速度（世界坐标系）
+        self.velocity_deficit = torch.zeros(self.num_envs, device=self.device)  # 速度缺额（衡量受困程度）
 
         # 命令缩放向量（用于观测归一化）
         self.commands_scale = torch.tensor(
@@ -74,6 +69,10 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # 高度扫描传感器
         self._height_scanner = RayCaster(self.cfg.height_scanner)
         self.scene.sensors["height_scanner"] = self._height_scanner
+
+        # 铲斗接触传感器（检测机械臂与地面的接触力，为支撑行为提供反馈）
+        self._bucket_contact = ContactSensor(self.cfg.bucket_contact_sensor)
+        self.scene.sensors["bucket_contact"] = self._bucket_contact
 
         # 灯光
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
@@ -209,7 +208,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         arm_actions = actions[:, 2:5].clone()  # 提取机械臂动作
         arm_dof_idx = self._body_dof_idx[1:]  # 跳过body_yaw_joint，只控制boom, forearm, bucket
-        current_arm_pos = self.robot.data.joint_pos[:, arm_dof_idx] #获取当前机械臂关节位置  
+        current_arm_pos = self.pos_actions[:, 1:] #基于当前目标位置进行累加，而不是实际位置
         arm_pos_delta = arm_actions * self.dt * self.cfg.position_action_scale
         new_arm_pos = current_arm_pos + arm_pos_delta
         new_arm_pos = torch.clamp(
@@ -220,7 +219,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         body_actions = actions[:, 5].clone()  # 提取车体偏航动作
         body_dof_idx = self._body_dof_idx[0]  # 仅body_yaw_joint索引
-        current_body_pos = self.robot.data.joint_pos[:, body_dof_idx] #获取当前车体偏航位置
+        current_body_pos = self.pos_actions[:, 0] #基于当前目标偏航位置进行累加
         body_pos_delta = body_actions * self.dt * self.cfg.body_yaw_scale
         new_body_pos = current_body_pos + body_pos_delta
         new_body_pos = torch.clamp(
@@ -269,6 +268,22 @@ class ExcavatorPpoEnv(DirectRLEnv):
         height_data = torch.nan_to_num(height_data, nan=0.0, posinf=1.0, neginf=-1.0)  # 射线未命中时ray_hits为inf，防止NaN传播
         height_data = height_data.clip(-1.0, 1.0)
 
+        # 机械臂关节力矩（boom, forearm, bucket）——通过 PD 控制器位置误差估算，作为机械臂受力反馈
+        arm_dof_idx = self._body_dof_idx[1:]  # boom, forearm, bucket
+        arm_pos_target = self.pos_actions[:, 1:]  # 当前位置目标
+        arm_pos_current = self.robot.data.joint_pos[:, arm_dof_idx]
+        arm_torque_proxy = (arm_pos_target - arm_pos_current)  # 与实际 PD 力矩成正比，当铲斗触地受阻时误差增大
+
+        # 铲斗地面接触力（z 方向反力，正值表示铲斗正在压地面）
+        bucket_contact_z = self._bucket_contact.data.net_forces_w[:, 0, 2].clamp(min=0.0) #铲斗接触传感器测量的世界坐标系下z方向接触力，仅正值（压地面）
+        bucket_contact_obs = (bucket_contact_z * cfg.contact_force_scale).unsqueeze(1)  # (N, 1)
+
+        # 速度缺额：实际/指令速度比，衡量受困程度 (0=跟踪良好, 1=完全受困)
+        cmd_vel = self.commands[:, 0].clamp(min=0.3)
+        actual_vel = self.base_link_lin_vel_b[:, 0]
+        self.velocity_deficit = (1.0 - (actual_vel / cmd_vel).clamp(0.0, 1.0))
+        velocity_deficit_obs = self.velocity_deficit.unsqueeze(1)  # (N, 1)
+
         obs = torch.cat((
             base_lin_vel * cfg.lin_vel_scale,
             base_ang_vel * cfg.ang_vel_scale,
@@ -280,6 +295,9 @@ class ExcavatorPpoEnv(DirectRLEnv):
             arm_joint_vel * cfg.dof_vel_scale,
             wheel_vel * cfg.wheel_vel_scale,
             self.actions,
+            arm_torque_proxy * cfg.arm_torque_scale,      # (N, 3) 机械臂力矩反馈
+            bucket_contact_obs,                            # (N, 1) 铲斗地面接触力
+            velocity_deficit_obs,                          # (N, 1) 受困指示器
             height_data * cfg.height_scale,
         ), dim=-1)
 
@@ -360,17 +378,30 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # 动作平滑度 (-, 0]
         action_rate = -torch.sum(torch.square(self.actions - self.last_actions), dim=1)
 
-        # # 机械臂收纳奖励 [0, 1]
-        # arm_joint_pos = self.robot.data.joint_pos[:, self._body_dof_idx[1:]]
-        # arm_safe_reward = torch.exp(-torch.sum(torch.square(arm_joint_pos - self.arm_stowed_pos), dim=1)) #偏差越小奖励越大
+        # 支撑辅助信号is_struggling基本判定
+        tilt_magnitude = torch.norm(self.gravity_body[:, :2], dim=1)  # 车体倾斜程度
+        is_heading_aligned = torch.abs(self.heading_error) < 0.8  # 必须具有一定的航向对齐度，排除掉头作弊
+        is_stuck = (self.velocity_deficit > 0.6) & is_heading_aligned # 速度受限且方向对齐时，才是真受困
+        is_tilted = tilt_magnitude > 0.25                  # 倾斜 > ~14°
+        is_struggling = (is_stuck | is_tilted).float()     # 综合"需要支撑"信号
 
-        # 机械臂能耗惩罚 (-, 0]，弱惩罚
+        # 机械臂能耗惩罚 (-, 0]，在受困时取消惩罚以鼓励用力
         arm_actions = self.actions[:, 2:5]
-        arm_effort = -torch.sum(torch.square(arm_actions), dim=1)
+        arm_effort = -torch.sum(torch.square(arm_actions), dim=1) * (1.0 - is_struggling)
 
-        # 车体偏航居中 [0, 1]
+        # 拖地惩罚 (-, 0]，正常行驶时铲斗碰地的拖地惩罚
+        bucket_contact_z = self._bucket_contact.data.net_forces_w[:, 0, 2].clamp(min=0.0) #铲斗接触传感器测量的世界坐标系下z方向接触力，仅正值（压地面）
+        drag_penalty = - (bucket_contact_z / 1000.0).clamp(max=2.0) * (1.0 - is_struggling)
+
+        # 支撑奖励
+        contact_strength = 1.0 - torch.exp(-bucket_contact_z / 3000.0)  #指数映射，[0, 1)
+        arm_dof_vel = self.robot.data.joint_vel[:, self._body_dof_idx[1:]] #机械臂关节速度，越大表示越积极地用力支撑或挣扎
+        explore_shaping = torch.tanh(torch.sum(torch.abs(arm_dof_vel), dim=1) * 0.5) * (1.0 - contact_strength) #接触力较小时，积极移动机械臂以寻找支撑点的探索动机奖励，随着接触力增强逐渐衰减
+        arm_support_reward = is_struggling * (contact_strength * 0.8 + explore_shaping * 0.2)  # 综合接触力与探索动机
+
+        # 车体偏航居中强惩罚 (-, 0]，强制要求身体朝向前方底盘
         body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
-        centering_reward = torch.exp(-torch.abs(body_yaw))
+        centering_penalty = -torch.square(body_yaw)
 
         # 存活奖励 cfg.alive_reward_scale/步
         alive_reward = torch.ones(self.num_envs, device=self.device)
@@ -382,12 +413,13 @@ class ExcavatorPpoEnv(DirectRLEnv):
             + 0.5 * backward_world_penalty # 后退惩罚，world (-, 0]
             + 0.5 * backward_body_penalty # 后退惩罚，body (-, 0]
             + 0.5 * orientation_penalty # 倾覆惩罚 (-, 0]
+            + 1.0 * drag_penalty # 正常行驶时铲斗碰地的拖地惩罚，迫使网络学会悬空平衡 (-, 0]
+            + 0.3 * arm_support_reward # 受困时铲斗触地支撑奖励 [0, 1]
+            + 0.005 * arm_effort # 弱机械臂能耗惩罚，允许必要时用力 (-, 0]
+            + 0.01 * action_rate # 动作平滑度 (-, 0]
+            + 1.0 * centering_penalty # 车体偏航居中紧约束，强制背必须向底盘前方 (-, 0]
             # + 0.2 * lin_vel_z_penalty # 减垂直速度成分，减少弹跳 (-, 0]
             # + 0.05 * ang_vel_xy_penalty # xy角速度惩罚 (-, 0]
-            # + 0.15 * base_height_reward # 底盘高度保持 (-, 0]
-            # + 0.01 * action_rate # 动作平滑度 (-, 0]
-            # + 0.01 * arm_effort # 机械臂能耗 (-, 0]
-            # + 0.3 * centering_reward # 车体偏航居中 [0, 1]
             # + 0.5 * alive_reward  # 存活奖励 cfg.alive_reward_scale/步
         )
 
@@ -428,6 +460,10 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # 重置动作缓冲区
         self.actions[env_ids] = 0.0
         self.last_actions[env_ids] = 0.0
+
+        # 重置目标位置动作缓冲区，防止跨回合残留
+        if hasattr(self, 'pos_actions'):
+            self.pos_actions[env_ids] = self.robot.data.default_joint_pos[env_ids][:, self._body_dof_idx].clone()
 
         # 重采样命令
         self._resample_commands(env_ids)

@@ -8,7 +8,7 @@ from isaaclab.sim import SimulationCfg, PhysxCfg  #模拟配置，时间步长�
 from isaaclab.utils import configclass
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
-from isaaclab.sensors import RayCasterCfg, patterns
+from isaaclab.sensors import RayCasterCfg, ContactSensorCfg, patterns
 import isaaclab.terrains as terrain_gen
 import isaaclab.sim as sim_utils
 import math
@@ -21,7 +21,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
 
     # - spaces definition
     action_space = 6
-    observation_space = 253
+    observation_space = 258  # 253 + 5 (机械臂力矩3 + 铲斗接触力1 + 速度缺额1)
     state_space = 0
 
     # simulation
@@ -51,6 +51,15 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
         pattern_cfg=patterns.GridPatternCfg(resolution=0.5, size=[8.0, 6.0]), #分辨率0.5m，范围8m×6m，17*13个采样点
         debug_vis=True,
         mesh_prim_paths=["/World/ground"],
+    )
+
+    # 铲斗接触传感器（检测 bucket 与地面的接触力，为机械臂支撑行为提供反馈）
+    bucket_contact_sensor = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/bucket_pitch_link",
+        update_period=0.0,    # 每步更新
+        history_length=1,
+        debug_vis=False,
+        filter_prim_paths_expr=["/World/ground"],  # 仅检测与地面的接触
     )
 
     # command配置（4 维: lin_vel_x, lin_vel_y, ang_vel_yaw, heading）
@@ -162,3 +171,5 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     wheel_vel_scale = 0.122    # 轮子速度缩放：velocity_limit = 8.2 rad/s -> 1.0（≈1/8.2）
     height_scale = 1.0         # 高度测量缩放（数据已 clip 到 [-1, 1]）
     base_height_offset = 0.5   # excavator.py 中的 init_state pos z 定义
+    arm_torque_scale = 0.00001 # 机械臂力矩缩放：typical stiffness ~500k → torque ~10k-50k → 归一化到 ~0.1-0.5
+    contact_force_scale = 0.0001 # 铲斗接触力缩放：典型接触力 ~1000-10000N → 归一化到 ~0.1-1.0

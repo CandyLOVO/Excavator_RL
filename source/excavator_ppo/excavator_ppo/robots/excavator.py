@@ -5,6 +5,7 @@ from isaaclab.actuators import ImplicitActuatorCfg #隐式执行器配置，PD�
 EXCAVATOR_CFG = ArticulationCfg(
     spawn = sim_utils.UsdFileCfg(
         usd_path="source/excavator_ppo/excavator_ppo/robots/USD/excavator_six_wheels/excavator_six_wheels.usd",
+        activate_contact_sensors=True,  # 启用接触传感器 API（铲斗接触检测需要）
         #USDFileCfg对刚性体和机器人等具有特殊参数
         #刚体属性
         rigid_props = sim_utils.RigidBodyPropertiesCfg(
