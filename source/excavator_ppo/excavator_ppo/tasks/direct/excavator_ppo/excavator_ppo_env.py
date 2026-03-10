@@ -49,6 +49,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.last_actions = torch.zeros_like(self.actions)
         self.heading_error = torch.zeros(self.num_envs, device=self.device) #储存heading误差供观测和奖励使用
         self.base_link_lin_vel_b = torch.zeros(self.num_envs, 3, device=self.device)  # 底盘 link origin 线速度（体坐标系）
+        self.root_link_vel_w = torch.zeros(self.num_envs, 3, device=self.device)  # 底盘 link origin 线速度（世界坐标系）
 
         # 命令缩放向量（用于观测归一化）
         self.commands_scale = torch.tensor(
@@ -292,6 +293,17 @@ class ExcavatorPpoEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         cfg = self.cfg
 
+        #刷新缓存的身体状态
+        self.forwards = math_utils.quat_apply(self.robot.data.root_quat_w, self.robot.data.FORWARD_VEC_B)
+        self._update_heading_command()
+        root_link_vel_w = self.robot.data.body_link_vel_w[:, 0, :3]  # (N, 3) root link origin 线速度（世界系）
+        self.root_link_vel_w = root_link_vel_w
+        self.base_link_lin_vel_b = math_utils.quat_apply_inverse(
+            self.robot.data.root_quat_w, root_link_vel_w
+        )  # (N, 3) 转换到体坐标系
+        gravity_world = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
+        self.gravity_body = math_utils.quat_apply_inverse(self.robot.data.root_quat_w, gravity_world)
+
         # 线速度跟踪 [0, 1]
         lin_vel_error = torch.sum(torch.square(
             self.commands[:, :2] - self.base_link_lin_vel_b[:, :2]
@@ -304,7 +316,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         # 航向误差（由_update_heading_command在_get_dones中计算并存储）[0, 1]
         heading_error = self.heading_error
-        heading_error_abs = torch.abs(self.heading_error)
+        heading_error_abs = torch.abs(heading_error)
         reward_far = torch.exp(-heading_error_abs / cfg.heading_sigma_far)  # 远区引导 (宽)
         reward_near = torch.exp(-heading_error_abs / cfg.heading_sigma_near) # 近区微调 (窄，梯度极大)
         heading_reward = 0.4 * reward_far + 0.6 * reward_near
@@ -324,7 +336,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         # 后退惩罚 (-, 0]
         body_forward_vel = self.base_link_lin_vel_b[:, 0]
-        forward_vel = self.robot.data.root_lin_vel_w[:, 1] #前进速度（world y 方向）
+        forward_vel = self.root_link_vel_w[:, 1] #前进速度（world y 方向，link origin 速度）
         backward_body_penalty = -torch.clamp(-body_forward_vel, min=0.0)
         backward_world_penalty = -torch.clamp(-forward_vel, min=0.0)
 
@@ -367,7 +379,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
             + 1.0 * tracking_lin_vel * heading_gate # 线速度跟踪，航向对齐时才计入 [0, 1]
             + 0.5 * tracking_ang_vel # 角速度跟踪 [0, 1]
             + 3.0 * heading_reward # 朝向对齐 [0, 1]
-            + 1.0 * backward_world_penalty # 后退惩罚，world (-, 0]
+            + 0.5 * backward_world_penalty # 后退惩罚，world (-, 0]
             + 0.5 * backward_body_penalty # 后退惩罚，body (-, 0]
             + 0.5 * orientation_penalty # 倾覆惩罚 (-, 0]
             # + 0.2 * lin_vel_z_penalty # 减垂直速度成分，减少弹跳 (-, 0]
@@ -387,20 +399,10 @@ class ExcavatorPpoEnv(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
-        self.forwards = math_utils.quat_apply(self.robot.data.root_quat_w, self.robot.data.FORWARD_VEC_B) #计算前进方向向量（世界坐标系，_get_rewards使用）
-        self._update_heading_command()
-
-        # 计算底盘几何中心（link origin）线速度，避免整机质心偏移导致转向时的寄生横向速度
-        # body_link_vel_w 使用 v_link = v_com + ω × (-r_com) 从质心速度反推 link origin 速度
-        root_link_vel_w = self.robot.data.body_link_vel_w[:, 0, :3]  # (N, 3) root link origin 线速度（世界系）
-        self.base_link_lin_vel_b = math_utils.quat_apply_inverse(
-            self.robot.data.root_quat_w, root_link_vel_w
-        )  # (N, 3) 转换到体坐标系
-
         # 翻车检测
         gravity_world = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
-        self.gravity_body = math_utils.quat_apply_inverse(self.robot.data.root_quat_w, gravity_world) #重力投影（_get_rewards也用）
-        flipped = self.gravity_body[:, 2] > -0.3
+        current_gravity_body = math_utils.quat_apply_inverse(self.robot.data.root_quat_w, gravity_world)
+        flipped = current_gravity_body[:, 2] > -0.3 # 当机器人翻转超过约 70°（即 up 向量 z 分量 > -0.3）时，认为翻车终止
 
         # 虚空坠落检测
         robot_pos = self.robot.data.root_pos_w
@@ -447,11 +449,15 @@ class ExcavatorPpoEnv(DirectRLEnv):
         default_root_state[:, 0] += random_x
         default_root_state[:, 1] += random_y
 
-        # 初始朝向随机，以目标航向为中心 ±π，确保最大偏差不超过 90°
-        random_yaw = self.commands[env_ids, 3] + (torch.rand(n, device=self.device)) * math.pi 
+        # 初始朝向随机，以目标航向为中心 ±π
+        random_yaw = self.commands[env_ids, 3] + (torch.rand(n, device=self.device) - 0.5) * 2.0 * math.pi #在目标航向基础上添加±180°的随机偏航
         default_root_state[:, 3:7] = math_utils.quat_from_angle_axis(random_yaw.unsqueeze(-1), self.up_dir).reshape(-1, 4) #根据随机朝向计算初始四元数
 
         self.robot.write_root_state_to_sim(default_root_state, env_ids)
+
+        # 重置速度缓存，防止 _get_observations 读到重置前的旧速度
+        self.base_link_lin_vel_b[env_ids] = 0.0
+        self.root_link_vel_w[env_ids] = 0.0
 
         # 根据已知的 random_yaw 立即更新航向角速度指令，避免观测中残留上一 episode 结束时的旧 commands[:,2]
         if self.cfg.heading_command:
