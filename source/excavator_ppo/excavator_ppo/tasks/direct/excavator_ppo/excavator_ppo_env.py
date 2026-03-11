@@ -419,7 +419,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         arm_support_reward = is_struggling * (contact_base + contact_progress)
 
         # 前进进度奖励 [0, 1]，世界坐标系 y 方向正向速度
-        forward_progress_reward = torch.clamp(forward_vel / 2.0, min=0.0, max=1.0)
+        forward_progress_reward = is_struggling * torch.clamp(forward_vel / 2.0, min=0.0, max=1.0)
 
         # 车体偏航居中强惩罚 (-, 0]，强制要求身体朝向前方底盘
         body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
