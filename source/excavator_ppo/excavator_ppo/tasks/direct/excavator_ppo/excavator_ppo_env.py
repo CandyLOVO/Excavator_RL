@@ -45,6 +45,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.base_link_lin_vel_b = torch.zeros(self.num_envs, 3, device=self.device)  # 底盘 link origin 线速度（体坐标系）
         self.root_link_vel_w = torch.zeros(self.num_envs, 3, device=self.device)  # 底盘 link origin 线速度（世界坐标系）
         self.velocity_deficit = torch.zeros(self.num_envs, device=self.device)  # 速度缺额（衡量受困程度）
+        self.stuck_counter = torch.zeros(self.num_envs, device=self.device)  # 持续受困计数器（防止出生瞬间误触发）
 
         # 命令缩放向量（用于观测归一化）
         self.commands_scale = torch.tensor(
@@ -380,24 +381,45 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         # 支撑辅助信号is_struggling基本判定
         tilt_magnitude = torch.norm(self.gravity_body[:, :2], dim=1)  # 车体倾斜程度
-        is_heading_aligned = torch.abs(self.heading_error) < 0.8  # 必须具有一定的航向对齐度，排除掉头作弊
-        is_stuck = (self.velocity_deficit > 0.6) & is_heading_aligned # 速度受限且方向对齐时，才是真受困
-        is_tilted = tilt_magnitude > 0.25                  # 倾斜 > ~14°
-        is_struggling = (is_stuck | is_tilted).float()     # 综合"需要支撑"信号
+        is_tilted = tilt_magnitude > 0.4  # 是否有明显倾覆风险（排除正常转向/落地引起的轻微倾斜）
+        actual_forward_vel = self.base_link_lin_vel_b[:, 0]
+        actual_yaw_rate = torch.abs(self.robot.data.root_com_ang_vel_b[:, 2]) # 实际偏航角速度
+        cmd_forward_vel = self.commands[:, 0]
+        is_turning = (torch.abs(self.heading_error) > 0.3) & (actual_yaw_rate > 0.1) #正在转向对齐时不判定为受困，因为转向过程中速度自然会降低
+        is_slow = (actual_forward_vel < 0.2) & (actual_yaw_rate < 0.15) #线速度和角速度都很低，可能受困    
+        wants_to_move = cmd_forward_vel > 0.3  # 有前进指令
+        wheel_vel_abs = torch.mean(torch.abs(self.robot.data.joint_vel[:, self._wheel_dof_idx]), dim=1) #轮子平均绝对速度
+
+        is_blocked = is_slow & wants_to_move & ~is_turning #被阻挡情况
+        is_wheel_slip = (wheel_vel_abs > 2.0) & is_slow #轮子空转打滑情况      
+        is_potentially_stuck = is_blocked | is_wheel_slip #可能受困
+        
+        self.stuck_counter = torch.where(
+            is_potentially_stuck,
+            self.stuck_counter + 1.0,
+            torch.clamp(self.stuck_counter - 2.0, min=0.0)  # 线性衰减，一旦脱困迅速重置
+        )
+        stuck_threshold = int(1.5 / self.dt)  # ~90 步 ≈ 1.5 秒
+        is_stuck = self.stuck_counter > stuck_threshold #持续受困超过阈值判定为真正的被卡住状态
+
+        is_struggling = (is_stuck | is_tilted).float() #辅助信号判定
 
         # 机械臂能耗惩罚 (-, 0]，在受困时取消惩罚以鼓励用力
-        arm_actions = self.actions[:, 2:5]
+        arm_actions = self.actions[:, 2:5] #机械臂动作（boom, forearm, bucket）
         arm_effort = -torch.sum(torch.square(arm_actions), dim=1) * (1.0 - is_struggling)
 
-        # 拖地惩罚 (-, 0]，正常行驶时铲斗碰地的拖地惩罚
-        bucket_contact_z = self._bucket_contact.data.net_forces_w[:, 0, 2].clamp(min=0.0) #铲斗接触传感器测量的世界坐标系下z方向接触力，仅正值（压地面）
-        drag_penalty = - (bucket_contact_z / 1000.0).clamp(max=2.0) * (1.0 - is_struggling)
+        # 拖地惩罚 (-, 0]，正常行驶时铲斗碰地给惩罚，受困时取消
+        bucket_contact_z = self._bucket_contact.data.net_forces_w[:, 0, 2].clamp(min=0.0)
+        drag_penalty = -(bucket_contact_z / 1000.0).clamp(max=2.0) * (1.0 - is_struggling)
 
-        # 支撑奖励
-        contact_strength = 1.0 - torch.exp(-bucket_contact_z / 3000.0)  #指数映射，[0, 1)
-        arm_dof_vel = self.robot.data.joint_vel[:, self._body_dof_idx[1:]] #机械臂关节速度，越大表示越积极地用力支撑或挣扎
-        explore_shaping = torch.tanh(torch.sum(torch.abs(arm_dof_vel), dim=1) * 0.5) * (1.0 - contact_strength) #接触力较小时，积极移动机械臂以寻找支撑点的探索动机奖励，随着接触力增强逐渐衰减
-        arm_support_reward = is_struggling * (contact_strength * 0.8 + explore_shaping * 0.2)  # 综合接触力与探索动机
+        # 支撑奖励 [0, ~2.5]，受困时根据铲斗接触力给予奖励
+        contact_strength = 1.0 - torch.exp(-bucket_contact_z / 3000.0) #接触强度映射，接触力越大奖励越接近1
+        contact_base = contact_strength * 0.15
+        contact_progress = contact_strength * torch.clamp(actual_forward_vel, min=0.0, max=1.5) #前进速度越大奖励越多
+        arm_support_reward = is_struggling * (contact_base + contact_progress)
+
+        # 前进进度奖励 [0, 1]，世界坐标系 y 方向正向速度
+        forward_progress_reward = torch.clamp(forward_vel / 2.0, min=0.0, max=1.0)
 
         # 车体偏航居中强惩罚 (-, 0]，强制要求身体朝向前方底盘
         body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
@@ -410,14 +432,15 @@ class ExcavatorPpoEnv(DirectRLEnv):
             + 1.0 * tracking_lin_vel * heading_gate # 线速度跟踪，航向对齐时才计入 [0, 1]
             + 0.5 * tracking_ang_vel # 角速度跟踪 [0, 1]
             + 3.0 * heading_reward # 朝向对齐 [0, 1]
+            + 2.0 * forward_progress_reward # 前进进度，强激励翻越障碍 [0, 1]
+            + 1.0 * drag_penalty # 正常行驶拖地惩罚 (-, 0]
+            + 2.0 * arm_support_reward # 受困支撑奖励（接触+前进）[0, ~2.5]
             + 0.5 * backward_world_penalty # 后退惩罚，world (-, 0]
             + 0.5 * backward_body_penalty # 后退惩罚，body (-, 0]
             + 0.5 * orientation_penalty # 倾覆惩罚 (-, 0]
-            + 1.0 * drag_penalty # 正常行驶时铲斗碰地的拖地惩罚，迫使网络学会悬空平衡 (-, 0]
-            + 0.3 * arm_support_reward # 受困时铲斗触地支撑奖励 [0, 1]
-            + 0.005 * arm_effort # 弱机械臂能耗惩罚，允许必要时用力 (-, 0]
+            + 0.005 * arm_effort # 弱机械臂能耗惩罚 (-, 0]
             + 0.01 * action_rate # 动作平滑度 (-, 0]
-            + 1.0 * centering_penalty # 车体偏航居中紧约束，强制背必须向底盘前方 (-, 0]
+            + 0.5 * centering_penalty # 车体偏航居中紧约束 (-, 0]
             # + 0.2 * lin_vel_z_penalty # 减垂直速度成分，减少弹跳 (-, 0]
             # + 0.05 * ang_vel_xy_penalty # xy角速度惩罚 (-, 0]
             # + 0.5 * alive_reward  # 存活奖励 cfg.alive_reward_scale/步
@@ -494,6 +517,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # 重置速度缓存，防止 _get_observations 读到重置前的旧速度
         self.base_link_lin_vel_b[env_ids] = 0.0
         self.root_link_vel_w[env_ids] = 0.0
+        self.stuck_counter[env_ids] = 0.0  # 重置受困计数器
 
         # 根据已知的 random_yaw 立即更新航向角速度指令，避免观测中残留上一 episode 结束时的旧 commands[:,2]
         if self.cfg.heading_command:
