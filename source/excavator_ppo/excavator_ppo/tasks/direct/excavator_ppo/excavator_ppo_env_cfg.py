@@ -98,7 +98,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
             ),
             "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
                 proportion=1.0 / 6,          # col 1 — 随机粗糙地形
-                noise_range=(0.10, 0.20), 
+                noise_range=(0.01, 0.10),  
                 noise_step=0.02,
                 border_width=0.25, 
             ),
