@@ -105,23 +105,23 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
             "discrete_obstacles": terrain_gen.HfDiscreteObstaclesTerrainCfg(
                 proportion=1.0 / 6,          # col 2 — 离散障碍物（纯凸起，需配合机械臂翻越）
                 obstacle_height_mode="fixed", # 只生成凸起障碍物，无凹坑
-                obstacle_height_range=(0.25, 0.50), # 障碍高度
-                obstacle_width_range=(3.0, 5.0),     # 障碍宽度
-                num_obstacles=50, 
-                platform_width=3.0,
+                obstacle_height_range=(0.15, 0.45), # 障碍高度
+                obstacle_width_range=(2.0, 4.0),     # 障碍宽度
+                num_obstacles=40, 
+                platform_width=5.0,
                 border_width=0.25,
             ),
             "wave": terrain_gen.HfWaveTerrainCfg(
                 proportion=1.0 / 6,          # col 3 — 波浪起伏（模拟工地土堆/缓坡山丘）
-                amplitude_range=(0.10, 1.0), # 振幅
+                amplitude_range=(0.10, 0.8), # 振幅
                 num_waves=2,                  # 波周期
                 border_width=0.25,
             ),
             "pyramid_stairs": terrain_gen.HfPyramidStairsTerrainCfg(
                 proportion=1.0 / 6,          # col 4 — 金字塔台阶（模拟采矿阶梯/土方边坡）
-                step_height_range=(0.08, 0.20),  # 台阶高度 0.08~0.20m，需要谨慎驾驶
-                step_width=0.8,               # 台阶宽度 0.8m，提供足够轮距着陆面
-                platform_width=2.5,           # 顶部平台 2.5m，给挖掘机足够转向空间
+                step_height_range=(0.05, 0.18),
+                step_width=1.0,               # 台阶宽度 0.8m，提供足够轮距着陆面
+                platform_width=3.0,           # 顶部平台 2.5m，给挖掘机足够转向空间
                 border_width=0.25,
             ),
             "flat_end": terrain_gen.MeshPlaneTerrainCfg(

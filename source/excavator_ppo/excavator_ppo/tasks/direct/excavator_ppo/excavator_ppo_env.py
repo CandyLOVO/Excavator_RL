@@ -46,6 +46,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.root_link_vel_w = torch.zeros(self.num_envs, 3, device=self.device)  # 底盘 link origin 线速度（世界坐标系）
         self.velocity_deficit = torch.zeros(self.num_envs, device=self.device)  # 速度缺额（衡量受困程度）
         self.stuck_counter = torch.zeros(self.num_envs, device=self.device)  # 持续受困计数器（防止出生瞬间误触发）
+        self.struggling_intensity = torch.zeros(self.num_envs, device=self.device)  # 连续受困强度（供奖励/调试）
         self.last_body_forward_vel = torch.zeros(self.num_envs, device=self.device)  # 上一步前进速度（用于支撑加速度奖励）
 
         # 命令缩放向量（用于观测归一化）
@@ -190,9 +191,9 @@ class ExcavatorPpoEnv(DirectRLEnv):
         #     -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
         # )  # 比例控制，增益与截断均由 cfg 配置
 
-        # # 当航向误差大时降低前进速度指令（软门控）#只留下heading_gate
-        # heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)
-        # self.commands[:, 0] = self.raw_lin_vel_cmd * heading_alignment #cos门控：偏差90°->0，偏差0°->1
+        # 当航向误差大时降低前进速度指令（软门控）#只留下heading_gate
+        heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)
+        self.commands[:, 0] = self.raw_lin_vel_cmd * heading_alignment #cos门控：偏差90°->0，偏差0°->1
 
     #更新动作，得到动作张量的副本
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
@@ -317,6 +318,52 @@ class ExcavatorPpoEnv(DirectRLEnv):
 
         return {"policy": obs}
 
+    def _compute_struggling_intensity(
+        self,
+        actual_forward_vel: torch.Tensor,
+        cmd_forward_vel: torch.Tensor,
+        wheel_vel_abs: torch.Tensor,
+    ) -> torch.Tensor:
+        """计算连续受困强度。
+        """
+        wants_to_move = cmd_forward_vel > 0.3
+        cmd_safe = torch.clamp(cmd_forward_vel, min=0.3)
+        progress_ratio = torch.clamp(actual_forward_vel / cmd_safe, 0.0, 1.0) #实际速度与指令速度的比率，衡量跟踪程度
+        velocity_deficit = 1.0 - progress_ratio #速度缺额，0=跟踪良好, 1=完全受困
+
+        # 关键：只有"明显慢到接近被挡住"才触发受困，避免正常慢速巡航被误判。
+        slow_score = torch.clamp((0.45 - actual_forward_vel) / 0.45, 0.0, 1.0)
+        severe_deficit = torch.clamp((velocity_deficit - 0.35) / 0.65, 0.0, 1.0)
+        wheel_slip_score = torch.clamp((wheel_vel_abs - 2.0) / 3.0, 0.0, 1.0) * (actual_forward_vel < 0.35).float()
+
+        heading_alignment = torch.clamp(torch.cos(self.heading_error), min=0.0)
+        heading_factor = 0.2 + 0.8 * heading_alignment #航向不是硬门槛，转向阶段保留弱感知
+
+        raw_struggling = (
+            (0.65 * severe_deficit + 0.35 * wheel_slip_score)
+            * slow_score
+            * wants_to_move.float()
+            * heading_factor
+        ) #计算受困程度，考虑速度缺额、轮速和航向对齐，只有在有前进指令时才评估受困，并且航向偏差较大时放宽受困判断
+
+        warmup_steps = int(2.0 / self.dt) #前2秒不考虑受困，避免落地和加速期误触发
+        raw_struggling = raw_struggling * (self.episode_length_buf > warmup_steps).float()
+
+        self.stuck_counter = torch.where(
+            raw_struggling > 0.12,
+            self.stuck_counter + raw_struggling,
+            torch.clamp(self.stuck_counter - 0.35, min=0.0),
+        ) #受困时计数器增加，非受困时缓慢衰减
+
+        activation_steps = int(1.2 / self.dt) #受困计数超过1.2秒才激活受困强度
+        ramp_steps = int(1.5 / self.dt)
+        struggling_intensity = torch.clamp(
+            (self.stuck_counter - activation_steps).float() / max(ramp_steps, 1),
+            0.0,
+            1.0,
+        ) #受困强度根据计数器线性增加，超过ramp_steps后达到最大值1.0
+        return struggling_intensity
+
     #获取奖励
     def _get_rewards(self) -> torch.Tensor:
         cfg = self.cfg
@@ -362,104 +409,53 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # correct_dir = torch.sign(heading_error) * torch.sign(yaw_rate) #方向一致为1,反向为-1
         # turning_reward = torch.clamp(correct_dir, min=0.0) * torch.abs(yaw_rate) #方向正确时奖励角速度大小
 
-        # 后退惩罚 (-, 0]，按航向对齐度调节严厉程度（背对目标时放松，避免转向死锁）
-        body_forward_vel = self.base_link_lin_vel_b[:, 0]
-        forward_vel = self.root_link_vel_w[:, 1] #前进速度（world y 方向，link origin 速度）
-        # heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)  # 对齐=1, 背对=0
-        # backward_body_penalty = -torch.clamp(-body_forward_vel, min=0.0) * heading_alignment
-        # backward_world_penalty = -torch.clamp(-forward_vel, min=0.0) * heading_alignment
-        backward_body_penalty = -torch.clamp(-body_forward_vel, min=0.0)
-        backward_world_penalty = -torch.clamp(-forward_vel, min=0.0)
+        # # 后退惩罚 (-, 0]，按航向对齐度调节严厉程度（背对目标时放松，避免转向死锁）
+        # body_forward_vel = self.base_link_lin_vel_b[:, 0]
+        # forward_vel = self.root_link_vel_w[:, 1] #前进速度（world y 方向，link origin 速度）
+        # # heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)  # 对齐=1, 背对=0
+        # # backward_body_penalty = -torch.clamp(-body_forward_vel, min=0.0) * heading_alignment
+        # # backward_world_penalty = -torch.clamp(-forward_vel, min=0.0) * heading_alignment
+        # backward_body_penalty = -torch.clamp(-body_forward_vel, min=0.0)
+        # backward_world_penalty = -torch.clamp(-forward_vel, min=0.0)
 
         # 倾覆惩罚 (-, 0]
         orientation_penalty = -torch.sum(torch.square(self.gravity_body[:, :2]), dim=1)
 
-        # 垂直线速度惩罚 (-, 0]
-        lin_vel_z_penalty = -torch.square(self.base_link_lin_vel_b[:, 2])
-
-        # 角速度 xy 惩罚 (-, 0]
-        ang_vel_xy_penalty = -torch.sum(torch.square(self.robot.data.root_com_ang_vel_b[:, :2]), dim=1)
-
-        # 底盘高度奖励 (-, 0]
-        base_height = self.robot.data.root_pos_w[:, 2]
-        terrain_below = self._height_scanner.data.ray_hits_w[..., 2]
-        terrain_below = torch.nan_to_num(terrain_below, nan=-10.0, posinf=-10.0, neginf=-10.0) 
-        terrain_height_est = torch.max(terrain_below, dim=1).values  # 机器人正下方附近最高地形点
-        clearance = base_height - terrain_height_est  # 实际离地高度
-        base_height_reward = -torch.square(clearance - cfg.base_height_target) #(期望离地高度-实际离地高度)^2
-
         # 动作平滑度 (-, 0]
         action_rate = -torch.sum(torch.square(self.actions - self.last_actions), dim=1)
 
-        # 受困检测
-        actual_forward_vel = self.base_link_lin_vel_b[:, 0]
-        cmd_forward_vel = self.commands[:, 0]
-        wheel_vel_abs = torch.mean(torch.abs(self.robot.data.joint_vel[:, self._wheel_dof_idx]), dim=1)
-
-        wants_to_move = cmd_forward_vel > 0.3
-        is_slow = actual_forward_vel < 0.3
-
-        # 航向大致对齐时才可能判为"被卡"（偏差>60°时正在转向，不算stuck）
-        heading_roughly_aligned = torch.abs(self.heading_error) < 1.05  # ~60°
-        is_blocked = is_slow & wants_to_move & heading_roughly_aligned
-
-        # 轮子空转始终算 stuck（不受航向限制：轮打滑就是被障碍卡住）
-        is_wheel_slip = (wheel_vel_abs > 2.0) & is_slow & wants_to_move
-        is_potentially_stuck = is_blocked | is_wheel_slip
-
-        # episode 前 3 秒不激活受困检测（给出生→转向→加速留足时间）
-        warmup_steps = int(3.0 / self.dt)
-        past_warmup = self.episode_length_buf > warmup_steps
-        is_potentially_stuck = is_potentially_stuck & past_warmup
-
-        # 计数器：慢衰减防止瞬时脱困就重置
-        self.stuck_counter = torch.where(
-            is_potentially_stuck,
-            self.stuck_counter + 1.0,
-            torch.clamp(self.stuck_counter - 0.5, min=0.0)
-        )
-        stuck_threshold = int(1.0 / self.dt)  # 1 秒持续受困后才开始激活
-
-        # 连续受困强度 [0, 1]，用于受困时机械臂和拖地惩罚的比例衰减
-        struggling_intensity = torch.clamp(
-            (self.stuck_counter - stuck_threshold).float() / max(stuck_threshold, 1),
-            0.0, 1.0,
-        ) * wants_to_move.float()
-
-        # 机械臂能耗惩罚 (-, 0]，受困时按比例放松
+        # 机械臂能耗惩罚 (-, 0]，鼓励高效利用机械臂，抑制无用的“划船”等动作
         arm_actions = self.actions[:, 2:5]
-        arm_effort = -torch.sum(torch.square(arm_actions), dim=1) * (1.0 - struggling_intensity)
+        arm_effort = -torch.sum(torch.square(arm_actions), dim=1)
 
-        # 拖地惩罚 (-, 0]，受困时连续衰减（替代二值门控，避免学到"绝不碰地"）
-        bucket_contact_z = self._bucket_contact.data.net_forces_w[:, 0, 2].clamp(min=0.0)
-        drag_penalty = -(bucket_contact_z / 1000.0).clamp(max=2.0) * (1.0 - struggling_intensity)
+        # 核心进度奖励 (Progress Reward)
+        # 鼓励挖掘机在世界坐标系下向着目标方向产生实际的位移
+        target_yaw = self.commands[:, 3]
+        target_dir_x = torch.cos(target_yaw)
+        target_dir_y = torch.sin(target_yaw)
+        
+        actual_vel_x = self.root_link_vel_w[:, 0]
+        actual_vel_y = self.root_link_vel_w[:, 1]
+        
+        # 投影到目标方向的速度
+        progress_vel = actual_vel_x * target_dir_x + actual_vel_y * target_dir_y
+        progress_reward = torch.clamp(progress_vel, min=0.0, max=cfg.lin_vel_x_range[1])
+        
+        # 底盘前进进度：为了让底盘正面朝向目标行驶，在此增加自身坐标系向前的奖励
+        body_forward_vel = self.base_link_lin_vel_b[:, 0]
+        body_forward_reward = torch.clamp(body_forward_vel, min=0.0, max=cfg.lin_vel_x_range[1])
 
-        # 动态拉拽支撑奖励
-        contact_strength = 1.0 - torch.exp(-bucket_contact_z / 1500.0)
-        contact_base_reward = contact_strength * 0.3 #机械臂触地奖励
-        forward_vel_gain = torch.clamp(body_forward_vel - self.last_body_forward_vel, min=0.0)
-        pulling_reward = contact_strength * forward_vel_gain #机械臂拉动奖励，基于前进速度增量
-        velocity_reward = contact_strength * torch.clamp(body_forward_vel, min=0.0, max=1.5) #机械臂支持奖励，基于当前前进速度
-        arm_support_reward = struggling_intensity * (
-            contact_base_reward + 3.0 * pulling_reward + 2.0 * velocity_reward
-        )
-
-        # 车体偏航居中惩罚 (-, 0]
-        body_yaw = self.robot.data.joint_pos[:, self._body_dof_idx[0]]
-        centering_penalty = -torch.square(body_yaw) * (1.0 - struggling_intensity)
+        # 目标一致性门控：只有在面向目标时，对底盘前进的奖励才更有效
+        heading_alignment = torch.clamp(torch.cos(self.heading_error), min=0.0)
 
         total_reward = (
-            + 1.0 * tracking_lin_vel * heading_gate  # 线速度跟踪 [0, 1]
-            + 0.5 * tracking_ang_vel                  # 角速度跟踪 [0, 1]
-            + 3.0 * heading_reward                    # 朝向对齐 [0, 1]
-            + 1.0 * drag_penalty                      # 拖地惩罚（受困时连续衰减）(-, 0]
-            + 1.0 * arm_support_reward                # 动态拉拽支撑奖励
-            + 0.5 * backward_world_penalty            # 世界后退惩罚 (-, 0]
-            + 0.5 * backward_body_penalty             # 体后退惩罚 (-, 0]
-            + 0.5 * orientation_penalty               # 倾覆惩罚 (-, 0]
-            + 0.05 * arm_effort                       # 机械臂能耗（提高权重抑制无目的挥臂）(-, 0]
-            + 0.01 * action_rate                      # 动作平滑度 (-, 0]
-            + 2.0 * centering_penalty                 # 车体偏航居中（受困时完全释放）(-, 0]
+            + 5.0 * progress_reward
+            + 3.0 * body_forward_reward * heading_alignment
+            + 1.0 * heading_reward
+            + 0.5 * tracking_ang_vel
+            + 0.5 * orientation_penalty
+            + 0.05 * arm_effort
+            + 0.05 * action_rate
         )
 
         total_reward = torch.nan_to_num(total_reward, nan=0.0, posinf=0.0, neginf=0.0)
@@ -537,6 +533,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.base_link_lin_vel_b[env_ids] = 0.0
         self.root_link_vel_w[env_ids] = 0.0
         self.stuck_counter[env_ids] = 0.0  # 重置受困计数器
+        self.struggling_intensity[env_ids] = 0.0
         self.last_body_forward_vel[env_ids] = 0.0  # 重置前进速度缓存
 
         # 根据已知的 random_yaw 立即更新航向角速度指令，避免观测中残留上一 episode 结束时的旧 commands[:,2]
@@ -557,9 +554,9 @@ class ExcavatorPpoEnv(DirectRLEnv):
             #     -self.cfg.max_ang_vel, self.cfg.max_ang_vel,
             # )  # 比例控制，增益与截断均由 cfg 配置
 
-            # # 重置时也按航向对齐度缩放前进速度指令
-            # heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)
-            # self.commands[env_ids, 0] = self.raw_lin_vel_cmd[env_ids] * heading_alignment
+            # 重置时也按航向对齐度缩放前进速度指令
+            heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)
+            self.commands[env_ids, 0] = self.raw_lin_vel_cmd[env_ids] * heading_alignment
 
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""
