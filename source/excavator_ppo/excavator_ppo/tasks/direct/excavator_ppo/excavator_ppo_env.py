@@ -346,17 +346,17 @@ class ExcavatorPpoEnv(DirectRLEnv):
             * heading_factor
         ) #计算受困程度，考虑速度缺额、轮速和航向对齐，只有在有前进指令时才评估受困，并且航向偏差较大时放宽受困判断
 
-        warmup_steps = int(2.0 / self.dt) #前2秒不考虑受困，避免落地和加速期误触发
+        warmup_steps = int(0.5 / self.dt) #缩短落地忽略期至0.5秒，遇到障碍可以更快反应
         raw_struggling = raw_struggling * (self.episode_length_buf > warmup_steps).float()
 
         self.stuck_counter = torch.where(
             raw_struggling > 0.12,
             self.stuck_counter + raw_struggling,
-            torch.clamp(self.stuck_counter - 0.35, min=0.0),
-        ) #受困时计数器增加，非受困时缓慢衰减
+            torch.clamp(self.stuck_counter - 0.5, min=0.0),
+        ) #受困时计数器增加，非受困时更快衰减
 
-        activation_steps = int(1.2 / self.dt) #受困计数超过1.2秒才激活受困强度
-        ramp_steps = int(1.5 / self.dt)
+        activation_steps = int(0.3 / self.dt) #受困计数超过0.3秒即激活受困强度
+        ramp_steps = int(0.5 / self.dt) #在0.5秒内爬升到满值
         struggling_intensity = torch.clamp(
             (self.stuck_counter - activation_steps).float() / max(ramp_steps, 1),
             0.0,
@@ -396,9 +396,9 @@ class ExcavatorPpoEnv(DirectRLEnv):
         reward_near = torch.exp(-heading_error_abs / cfg.heading_sigma_near) # 近区微调 (窄，梯度极大)
         heading_reward = 0.4 * reward_far + 0.6 * reward_near
 
-        # heading_gate = torch.clamp(torch.cos(heading_error), min=0.0) #航向门控，偏差90°->0，偏差0°->1
-        # heading_gate = -2.0/math.pi * torch.abs(heading_error) + 1.0 #线性门控，偏差90°->0，偏差0°->1
-        heading_gate = torch.exp(-torch.square(heading_error) / (2 * 0.5**2)) #高斯门控，偏差0.5 rad (~28°)处约为0.61，偏差90°处约为0.0019
+        heading_gate = torch.clamp(torch.cos(self.heading_error), min=0.0) #航向门控，偏差90°->0，偏差0°->1
+        # heading_gate = -2.0/math.pi * torch.abs(self.heading_error) + 1.0 #线性门控，偏差90°->0，偏差0°->1
+        # heading_gate = torch.exp(-torch.square(self.heading_error) / (2 * 0.5**2)) #高斯门控，偏差0.5 rad (~28°)处约为0.61，偏差90°处约为0.0019
 
         # # 前进奖励，仅当朝向对齐时给予奖励 [0, +) #和tracking_lin_vel冲突
         # body_lin_vel = self.base_link_lin_vel_b[:, 0] #前进速度（body x 方向）
@@ -409,14 +409,14 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # correct_dir = torch.sign(heading_error) * torch.sign(yaw_rate) #方向一致为1,反向为-1
         # turning_reward = torch.clamp(correct_dir, min=0.0) * torch.abs(yaw_rate) #方向正确时奖励角速度大小
 
-        # # 后退惩罚 (-, 0]，按航向对齐度调节严厉程度（背对目标时放松，避免转向死锁）
-        # body_forward_vel = self.base_link_lin_vel_b[:, 0]
-        # forward_vel = self.root_link_vel_w[:, 1] #前进速度（world y 方向，link origin 速度）
-        # # heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)  # 对齐=1, 背对=0
-        # # backward_body_penalty = -torch.clamp(-body_forward_vel, min=0.0) * heading_alignment
-        # # backward_world_penalty = -torch.clamp(-forward_vel, min=0.0) * heading_alignment
-        # backward_body_penalty = -torch.clamp(-body_forward_vel, min=0.0)
-        # backward_world_penalty = -torch.clamp(-forward_vel, min=0.0)
+        # 后退惩罚 (-, 0]，按航向对齐度调节严厉程度（背对目标时放松，避免转向死锁）
+        body_forward_vel = self.base_link_lin_vel_b[:, 0]
+        forward_vel = self.root_link_vel_w[:, 1] #前进速度（world y 方向，link origin 速度）
+        # heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)  # 对齐=1, 背对=0
+        # backward_body_penalty = -torch.clamp(-body_forward_vel, min=0.0) * heading_alignment
+        # backward_world_penalty = -torch.clamp(-forward_vel, min=0.0) * heading_alignment
+        backward_body_penalty = -torch.clamp(-body_forward_vel, min=0.0)
+        backward_world_penalty = -torch.clamp(-forward_vel, min=0.0)
 
         # 倾覆惩罚 (-, 0]
         orientation_penalty = -torch.sum(torch.square(self.gravity_body[:, :2]), dim=1)
@@ -424,38 +424,65 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # 动作平滑度 (-, 0]
         action_rate = -torch.sum(torch.square(self.actions - self.last_actions), dim=1)
 
-        # 机械臂能耗惩罚 (-, 0]，鼓励高效利用机械臂，抑制无用的“划船”等动作
-        arm_actions = self.actions[:, 2:5]
-        arm_effort = -torch.sum(torch.square(arm_actions), dim=1)
+        # 垂直速度和角速度惩罚，增设死区以容忍正常行驶时的路面颠簸，但严惩暴力跳跃
+        lin_vel_z_abs = torch.abs(self.base_link_lin_vel_b[:, 2])
+        lin_vel_z_penalty = -torch.square(torch.clamp(lin_vel_z_abs - 0.2, min=0.0))
+        ang_vel_xy_abs = torch.abs(self.robot.data.root_com_ang_vel_b[:, :2])
+        ang_vel_xy_penalty = -torch.sum(torch.square(torch.clamp(ang_vel_xy_abs - 0.5, min=0.0)), dim=1)
+
+        # 受困检测
+        actual_forward_vel = self.base_link_lin_vel_b[:, 0]
+        cmd_forward_vel = self.commands[:, 0]
+        wheel_vel_abs = torch.mean(torch.abs(self.robot.data.joint_vel[:, self._wheel_dof_idx]), dim=1)
+        struggling_intensity = self._compute_struggling_intensity(
+            actual_forward_vel,
+            cmd_forward_vel,
+            wheel_vel_abs,
+        )
+        self.struggling_intensity = struggling_intensity
+
+        # 获取铲斗触地强度
+        bucket_contact_z = self._bucket_contact.data.net_forces_w[:, 0, 2].clamp(min=0.0)
+        contact_strength = 1.0 - torch.exp(-bucket_contact_z / 1500.0)
+        
+        # 拖地惩罚 (-, 0]：非受困时强烈惩罚触地（防止未遇障把机械臂当拐杖）。受困时惩罚降为0
+        drag_penalty = -contact_strength * torch.square(1.0 - struggling_intensity)
+
+        # 上装能耗惩罚 (-, 0]，鼓励高效利用上半身（包含旋转座舱和机械臂），抑制无用的“划船”、左右乱晃
+        upper_actions = self.actions[:, 2:6]
+        upper_effort = -torch.sum(torch.square(upper_actions), dim=1)
 
         # 核心进度奖励 (Progress Reward)
-        # 鼓励挖掘机在世界坐标系下向着目标方向产生实际的位移
+        # 鼓励挖掘机在世界坐标系下向着目标方向产生实际的位移，使用 heading_gate 避免倒位获利
         target_yaw = self.commands[:, 3]
         target_dir_x = torch.cos(target_yaw)
         target_dir_y = torch.sin(target_yaw)
-        
         actual_vel_x = self.root_link_vel_w[:, 0]
         actual_vel_y = self.root_link_vel_w[:, 1]
-        
-        # 投影到目标方向的速度
-        progress_vel = actual_vel_x * target_dir_x + actual_vel_y * target_dir_y
-        progress_reward = torch.clamp(progress_vel, min=0.0, max=cfg.lin_vel_x_range[1])
-        
-        # 底盘前进进度：为了让底盘正面朝向目标行驶，在此增加自身坐标系向前的奖励
-        body_forward_vel = self.base_link_lin_vel_b[:, 0]
-        body_forward_reward = torch.clamp(body_forward_vel, min=0.0, max=cfg.lin_vel_x_range[1])
+        progress_vel = actual_vel_x * target_dir_x + actual_vel_y * target_dir_y #目标方向上的实际速度分量
 
-        # 目标一致性门控：只有在面向目标时，对底盘前进的奖励才更有效
-        heading_alignment = torch.clamp(torch.cos(self.heading_error), min=0.0)
+        body_forward_vel = self.base_link_lin_vel_b[:, 0] #底盘前进速度分量
+
+        # 联合进度：只有既在向目标移动，又是底盘正向移动时才给予高额奖励。这就自然且非强制地抵制了“打转/侧滑/倒车”向目标移动的行为。
+        effective_progress = torch.min(progress_vel, body_forward_vel)
+        progress_reward = torch.clamp(effective_progress, min=0.0, max=cfg.lin_vel_x_range[1]) * heading_gate
+        
+        # 受困触地支持奖励：当陷入困境时，首先鼓励机械臂主动触底提供支撑力（基础分），如果进一步产生了向前位移，则给予乘数加成。
+        # 不再和前进速度直接相乘（防止受困完全停滞时得不到触地探索的奖励闭环）。
+        movement_bonus = 1.0 + 2.0 * torch.clamp(effective_progress, min=0.0, max=cfg.lin_vel_x_range[1])
+        support_reward = struggling_intensity * contact_strength * movement_bonus * heading_gate
 
         total_reward = (
-            + 5.0 * progress_reward
-            + 3.0 * body_forward_reward * heading_alignment
-            + 1.0 * heading_reward
-            + 0.5 * tracking_ang_vel
-            + 0.5 * orientation_penalty
-            + 0.05 * arm_effort
-            + 0.05 * action_rate
+            + 5.0 * progress_reward                     # 极大地奖励车头朝前且向目标行进的综合有效位移
+            + 4.0 * support_reward                      # 受困时用机械臂触地起支撑作用给予高额加分，无需立即产生位移即有收益
+            + 1.5 * heading_reward                      # 辅助航向对齐奖励
+            + 1.0 * backward_body_penalty               # 适度惩罚倒车，配合 gating 已能切断倒车获利，允许短后退调姿
+            + 2.0 * drag_penalty                        # 强烈惩罚在非受困时机械臂拖地，逼迫其平地收起
+            + 1.0 * orientation_penalty                 # 惩罚过度翘起或翻车（直接抑制前倾后仰）
+            + 1.0 * lin_vel_z_penalty                   # 严惩底盘质心突然垂直剧烈跳动（但带死区容忍爬坡）
+            + 0.5 * ang_vel_xy_penalty                  # 严惩底盘剧烈翻滚/俯仰
+            + 0.05 * upper_effort                       # 上半身能耗惩罚，抑制车体无意义地持续乱转
+            + 0.5 * action_rate                         # 平滑惩罚
         )
 
         total_reward = torch.nan_to_num(total_reward, nan=0.0, posinf=0.0, neginf=0.0)

@@ -17,7 +17,7 @@ import math
 class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2 #2个模拟时间步更新一次动作
-    episode_length_s = 40.0  # 更长episode给挖掘机更多时间完成复杂地形
+    episode_length_s = 60.0  # 更长episode给挖掘机更多时间完成复杂地形
 
     # - spaces definition
     action_space = 6
@@ -172,4 +172,4 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     height_scale = 1.0         # 高度测量缩放（数据已 clip 到 [-1, 1]）
     base_height_offset = 0.5   # excavator.py 中的 init_state pos z 定义
     arm_torque_scale = 0.00001 # 机械臂力矩缩放：typical stiffness ~500k → torque ~10k-50k → 归一化到 ~0.1-0.5
-    contact_force_scale = 0.0001 # 铲斗接触力缩放：典型接触力 ~1000-10000N → 归一化到 ~0.1-1.0
+    contact_force_scale = 0.00002 # 铲斗接触力缩放
