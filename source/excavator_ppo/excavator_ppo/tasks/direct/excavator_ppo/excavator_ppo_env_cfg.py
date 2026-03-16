@@ -154,7 +154,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     # 控制缩放
     action_scale = 8.2  # 履带速度控制缩放，v_max = ω_limit × r_wheel = 8.2 rad/s × 0.245 m ≈ 2.0 m/s
     position_action_scale = 1.5  # 机械臂位置控制缩放，每步最大位置增量 = 1.0 × dt（1/120*2） × 1.5 = 0.025 rad -> 1.5 rad/s
-    body_yaw_scale = 1.0  # 车体偏航控制缩放，每步最大偏航增量 = 1.0 × dt × 1.0 = 0.0167 rad -> 1.0 rad/s
+    body_yaw_scale = 1.5  # 车体偏航控制缩放，每步最大偏航增量 = 1.0 × dt × 1.5 = 0.025 rad -> 1.5 rad/s
 
     # 速度跟踪奖励参数
     tracking_lin_vel_sigma = 0.5      # exp(-error/sigma) 的衰减因子，越小奖励越集中于精确匹配

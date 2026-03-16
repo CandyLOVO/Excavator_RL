@@ -409,7 +409,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # correct_dir = torch.sign(heading_error) * torch.sign(yaw_rate) #方向一致为1,反向为-1
         # turning_reward = torch.clamp(correct_dir, min=0.0) * torch.abs(yaw_rate) #方向正确时奖励角速度大小
 
-        # 后退惩罚 (-, 0]，按航向对齐度调节严厉程度（背对目标时放松，避免转向死锁）
+        # 后退惩罚 (-, 0]
         body_forward_vel = self.base_link_lin_vel_b[:, 0]
         forward_vel = self.root_link_vel_w[:, 1] #前进速度（world y 方向，link origin 速度）
         # heading_alignment = torch.clamp(torch.cos(heading_error), min=0.0)  # 对齐=1, 背对=0
@@ -418,17 +418,23 @@ class ExcavatorPpoEnv(DirectRLEnv):
         backward_body_penalty = -torch.clamp(-body_forward_vel, min=0.0)
         backward_world_penalty = -torch.clamp(-forward_vel, min=0.0)
 
-        # 倾覆惩罚 (-, 0]
-        orientation_penalty = -torch.sum(torch.square(self.gravity_body[:, :2]), dim=1)
+        # 侧滑惩罚：适度横向滑动惩罚，防止底盘无脑侧滑和乱转，但不应过分苛刻
+        slip_penalty = -torch.abs(self.base_link_lin_vel_b[:, 1])
+
+        # 倾覆与姿态惩罚 (-, 0]
+        # 仅惩罚左右侧翻(Roll)，允许挖掘机翘起车身和前倾爬坡！
+        roll_penalty = -torch.square(self.gravity_body[:, 1])
 
         # 动作平滑度 (-, 0]
         action_rate = -torch.sum(torch.square(self.actions - self.last_actions), dim=1)
 
-        # 垂直速度和角速度惩罚，增设死区以容忍正常行驶时的路面颠簸，但严惩暴力跳跃
-        lin_vel_z_abs = torch.abs(self.base_link_lin_vel_b[:, 2])
-        lin_vel_z_penalty = -torch.square(torch.clamp(lin_vel_z_abs - 0.2, min=0.0))
+        # 角速度惩罚：放宽对正常爬坡前后摇晃的限制，只死惩极度剧烈的翻滚跳跃
         ang_vel_xy_abs = torch.abs(self.robot.data.root_com_ang_vel_b[:, :2])
-        ang_vel_xy_penalty = -torch.sum(torch.square(torch.clamp(ang_vel_xy_abs - 0.5, min=0.0)), dim=1)
+        ang_vel_xy_penalty = -torch.sum(torch.square(torch.clamp(ang_vel_xy_abs - 1.5, min=0.0)), dim=1)
+
+        # 偏航角速度惩罚：【修改重点】适度惩罚极快的绕圈旋转，鼓励直行
+        yaw_vel_abs = torch.abs(self.robot.data.root_com_ang_vel_b[:, 2])
+        yaw_vel_penalty = -torch.square(torch.clamp(yaw_vel_abs - 0.7, min=0.0))
 
         # 受困检测
         actual_forward_vel = self.base_link_lin_vel_b[:, 0]
@@ -445,44 +451,67 @@ class ExcavatorPpoEnv(DirectRLEnv):
         bucket_contact_z = self._bucket_contact.data.net_forces_w[:, 0, 2].clamp(min=0.0)
         contact_strength = 1.0 - torch.exp(-bucket_contact_z / 1500.0)
         
-        # 拖地惩罚 (-, 0]：非受困时强烈惩罚触地（防止未遇障把机械臂当拐杖）。受困时惩罚降为0
-        drag_penalty = -contact_strength * torch.square(1.0 - struggling_intensity)
+        # 拖地惩罚 (-, 0]：如果在平路顺畅走时不用收起机械臂，将受到强惩罚
+        drag_penalty = -contact_strength * (1.0 - struggling_intensity)
 
-        # 上装能耗惩罚 (-, 0]，鼓励高效利用上半身（包含旋转座舱和机械臂），抑制无用的“划船”、左右乱晃
+        # 上装能耗惩罚：轻微抑制上装作为拨浪鼓持续乱转，促使挖掘机寻找最优支撑位
         upper_actions = self.actions[:, 2:6]
         upper_effort = -torch.sum(torch.square(upper_actions), dim=1)
 
-        # 核心进度奖励 (Progress Reward)
-        # 鼓励挖掘机在世界坐标系下向着目标方向产生实际的位移，使用 heading_gate 避免倒位获利
+        # 航向对齐奖励
+        heading_error_abs = torch.abs(self.heading_error)
+        reward_far = torch.exp(-heading_error_abs / cfg.heading_sigma_far)
+        reward_near = torch.exp(-heading_error_abs / cfg.heading_sigma_near)
+        heading_reward = 0.4 * reward_far + 0.6 * reward_near
+        heading_alignment = torch.clamp(torch.cos(self.heading_error), min=0.0)
+
+        # 【核心逻辑重构】: 完全基于物理空间和绝对进度的柔性约束奖励闭环
+
+        # 1. 绝对进度：
         target_yaw = self.commands[:, 3]
         target_dir_x = torch.cos(target_yaw)
         target_dir_y = torch.sin(target_yaw)
         actual_vel_x = self.root_link_vel_w[:, 0]
         actual_vel_y = self.root_link_vel_w[:, 1]
-        progress_vel = actual_vel_x * target_dir_x + actual_vel_y * target_dir_y #目标方向上的实际速度分量
-
-        body_forward_vel = self.base_link_lin_vel_b[:, 0] #底盘前进速度分量
-
-        # 联合进度：只有既在向目标移动，又是底盘正向移动时才给予高额奖励。这就自然且非强制地抵制了“打转/侧滑/倒车”向目标移动的行为。
-        effective_progress = torch.min(progress_vel, body_forward_vel)
-        progress_reward = torch.clamp(effective_progress, min=0.0, max=cfg.lin_vel_x_range[1]) * heading_gate
         
-        # 受困触地支持奖励：当陷入困境时，首先鼓励机械臂主动触底提供支撑力（基础分），如果进一步产生了向前位移，则给予乘数加成。
-        # 不再和前进速度直接相乘（防止受困完全停滞时得不到触地探索的奖励闭环）。
-        movement_bonus = 1.0 + 2.0 * torch.clamp(effective_progress, min=0.0, max=cfg.lin_vel_x_range[1])
-        support_reward = struggling_intensity * contact_strength * movement_bonus * heading_gate
+        # 计算朝向目标的位移
+        progress_vel = actual_vel_x * target_dir_x + actual_vel_y * target_dir_y
+        progress_reward_raw = torch.clamp(progress_vel, min=-cfg.lin_vel_x_range[1], max=cfg.lin_vel_x_range[1])
+        
+        # 【修改重点】：使用 heading_alignment 进行软门控。
+        # 如果是前进（赚分），要求挖掘机必须正对目标，侧对或背对前进将导致分数大打折扣甚至为0，解决了它不愿意掉头的问题。
+        # 如果是后退（远离目标），则直接毫不留情地扣去全部分数，打破画圆不掉分的作弊漏洞！
+        progress_reward = torch.where(
+            progress_reward_raw > 0,
+            progress_reward_raw * heading_alignment,
+            progress_reward_raw
+        )
+        
+        # 2. 受困越障反馈：重新建立从摸索到跨越的奖励阶梯！
+        # (1) 安慰分：当挖掘机卡死不动时，敢于把铲斗压在地上提供力，直接给点微分（启发触地动作）
+        support_base_reward = struggling_intensity * contact_strength * heading_alignment
+        
+        # (2) 抬升激赏：不仅把铲斗按地上了，还借反作用力把底盘往上撑起了（有向上Z速度），给高分！
+        lift_vel = torch.clamp(self.base_link_lin_vel_b[:, 2], min=0.0, max=1.0)
+        support_lift_reward = struggling_intensity * contact_strength * lift_vel * heading_alignment
+        
+        # (3) 核心突围：被卡住时用铲斗杵地，并且确实挤压出了向前的进度，给最高分爆发！
+        effective_forward = torch.clamp(progress_vel, min=0.0, max=cfg.lin_vel_x_range[1])
+        support_forward_reward = struggling_intensity * contact_strength * effective_forward * heading_alignment
 
         total_reward = (
-            + 5.0 * progress_reward                     # 极大地奖励车头朝前且向目标行进的综合有效位移
-            + 4.0 * support_reward                      # 受困时用机械臂触地起支撑作用给予高额加分，无需立即产生位移即有收益
-            + 1.5 * heading_reward                      # 辅助航向对齐奖励
-            + 1.0 * backward_body_penalty               # 适度惩罚倒车，配合 gating 已能切断倒车获利，允许短后退调姿
-            + 2.0 * drag_penalty                        # 强烈惩罚在非受困时机械臂拖地，逼迫其平地收起
-            + 1.0 * orientation_penalty                 # 惩罚过度翘起或翻车（直接抑制前倾后仰）
-            + 1.0 * lin_vel_z_penalty                   # 严惩底盘质心突然垂直剧烈跳动（但带死区容忍爬坡）
-            + 0.5 * ang_vel_xy_penalty                  # 严惩底盘剧烈翻滚/俯仰
-            + 0.05 * upper_effort                       # 上半身能耗惩罚，抑制车体无意义地持续乱转
-            + 0.5 * action_rate                         # 平滑惩罚
+            + 6.0 * progress_reward                     # 强制要求面向目标且产生位移的双管齐下最优进度奖励
+            + 0.5 * support_base_reward                 # 受困微引导：遇到障碍不知道怎么做时，主动触地摸索就有分
+            + 3.0 * support_lift_reward                 # 受困进阶反馈：学会用大臂前推借力撑起车头！
+            + 4.0 * support_forward_reward              # 受困终极杀招：撑起车子并成功向目标滑动跨越障碍！
+            + 1.5 * heading_reward                      # 维持目标朝向对齐作为指路灯塔
+            + 1.0 * slip_penalty                        # 惩罚履带侧滑横着走
+            + 1.5 * drag_penalty                        # 平路禁止拖地当拐杖
+            + 2.0 * roll_penalty                        # 最严格防侧翻（保证生存），但不限制车身向前后仰起爬坡
+            + 0.5 * ang_vel_xy_penalty                  # 降维防弹飞空翻
+            + 0.5 * yaw_vel_penalty                     # 【新增】防绕圆：惩罚底盘持续无意义的陀螺式快转
+            + 0.1 * upper_effort                        # 少量抑制上体作为拨浪鼓盲目乱转
+            + 0.2 * action_rate                         # 动作平滑保护
         )
 
         total_reward = torch.nan_to_num(total_reward, nan=0.0, posinf=0.0, neginf=0.0)
