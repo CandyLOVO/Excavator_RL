@@ -29,6 +29,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         self.num_wheel_dof = len(self.cfg.wheel_dof_name)
         self._body_dof_idx, _ = self.robot.find_joints(self.cfg.body_dof_name) #关节索引 0、7、8、9
         self._wheel_dof_idx, _ = self.robot.find_joints(self.cfg.wheel_dof_name) #1、2、3、4、5、6
+        self._bucket_body_idx, _ = self.robot.find_bodies(["bucket_pitch_link"])  # 铲斗末端刚体索引
  
         self.joint_pos = self.robot.data.joint_pos
         self.dof_pos_lower_limits = self.robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
@@ -285,6 +286,11 @@ class ExcavatorPpoEnv(DirectRLEnv):
         arm_pos_current = self.robot.data.joint_pos[:, arm_dof_idx]
         arm_torque_proxy = (arm_pos_target - arm_pos_current)  # 与实际 PD 力矩成正比，当铲斗触地受阻时误差增大
 
+        # 铲斗末端相对底盘位置（体坐标系），帮助策略学习“把铲斗放在台阶上”
+        bucket_pos_w = self.robot.data.body_link_pos_w[:, self._bucket_body_idx[0], :]
+        bucket_rel_pos_w = bucket_pos_w - self.robot.data.root_pos_w
+        bucket_rel_pos_b = math_utils.quat_apply_inverse(self.robot.data.root_quat_w, bucket_rel_pos_w)
+
         # 铲斗地面接触力（z 方向反力，正值表示铲斗正在压地面）
         bucket_contact_z = self._bucket_contact.data.net_forces_w[:, 0, 2].clamp(min=0.0) #铲斗接触传感器测量的世界坐标系下z方向接触力，仅正值（压地面）
         bucket_contact_obs = (bucket_contact_z * cfg.contact_force_scale).unsqueeze(1)  # (N, 1)
@@ -309,6 +315,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
             arm_torque_proxy * cfg.arm_torque_scale,      # (N, 3) 机械臂力矩反馈
             bucket_contact_obs,                            # (N, 1) 铲斗地面接触力
             velocity_deficit_obs,                          # (N, 1) 受困指示器
+            bucket_rel_pos_b * cfg.bucket_rel_pos_scale,  # (N, 3) 铲斗末端相对底盘坐标（体坐标系）
             height_data * cfg.height_scale,
         ), dim=-1)
 
@@ -572,10 +579,11 @@ class ExcavatorPpoEnv(DirectRLEnv):
         default_root_state[:, :3] += self._terrain.env_origins[env_ids]
         default_root_state[:, 2] += 0.05  # 仅略微抬高，避免重心靠前导致前倾
 
-        # 在起点平地内添加随机位置偏移，增加训练多样性
+        # 在 col 0 起点平地内添加随机位置偏移，增加训练多样性
         n = len(env_ids)
         random_x = (torch.rand(n, device=self.device) - 0.5) * self.cfg.track_width * 0.8
         random_y = (torch.rand(n, device=self.device) - 0.5) * self.cfg.track_section_length * 0.6
+
         default_root_state[:, 0] += random_x
         default_root_state[:, 1] += random_y
 

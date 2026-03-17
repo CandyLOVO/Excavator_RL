@@ -21,7 +21,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
 
     # - spaces definition
     action_space = 6
-    observation_space = 258  # 253 + 5 (机械臂力矩3 + 铲斗接触力1 + 速度缺额1)
+    observation_space = 261  # 253 + 8 (机械臂力矩3 + 铲斗接触力1 + 速度缺额1 + 铲斗相对坐标3)
     state_space = 0
 
     # simulation
@@ -76,9 +76,11 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     # 地形配置
     track_num_stages = 6          # 地形阶段数
     track_width = 40.0            # 赛道宽度 (m)
-    track_section_length = 20.0   # 每段地形沿 y 方向长度 (m)
+    track_section_length = 30.0   # 每段地形沿 y 方向长度 (m)
     track_difficulty = 0.5        # 地形难度（0.0~1.0），控制随机粗糙度、障碍密度/高度、波浪振幅、台阶高度等参数
     _border_width = 0.0           # 地形边界平坦区 (m)
+    random_start_col_min = 0      # 初始列随机下界（包含）
+    random_start_col_max = 4      # 初始列随机上界（包含），保留 col 5 作为终点区
 
     TRACK_TERRAINS_CFG = TerrainGeneratorCfg(
         size=(track_width, track_section_length),  # 每段地形尺寸
@@ -102,13 +104,11 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
                 noise_step=0.02,
                 border_width=0.25, 
             ),
-            "discrete_obstacles": terrain_gen.HfDiscreteObstaclesTerrainCfg(
-                proportion=1.0 / 6,          # col 2 — 离散障碍物（纯凸起，需配合机械臂翻越）
-                obstacle_height_mode="fixed", # 只生成凸起障碍物，无凹坑
-                obstacle_height_range=(0.15, 0.45), # 障碍高度
-                obstacle_width_range=(2.0, 4.0),     # 障碍宽度
-                num_obstacles=40, 
-                platform_width=5.0,
+            "pyramid_stairs": terrain_gen.HfPyramidStairsTerrainCfg(
+                proportion=1.0 / 6,          # col 2 — 金字塔台阶（模拟采矿阶梯/土方边坡）
+                step_height_range=(0.4, 0.5),
+                step_width=5.0,               # 台阶宽度
+                platform_width=10.0,           # 顶部平台
                 border_width=0.25,
             ),
             "wave": terrain_gen.HfWaveTerrainCfg(
@@ -117,11 +117,13 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
                 num_waves=2,                  # 波周期
                 border_width=0.25,
             ),
-            "pyramid_stairs": terrain_gen.HfPyramidStairsTerrainCfg(
-                proportion=1.0 / 6,          # col 4 — 金字塔台阶（模拟采矿阶梯/土方边坡）
-                step_height_range=(0.05, 0.18),
-                step_width=1.0,               # 台阶宽度 0.8m，提供足够轮距着陆面
-                platform_width=3.0,           # 顶部平台 2.5m，给挖掘机足够转向空间
+            "discrete_obstacles": terrain_gen.HfDiscreteObstaclesTerrainCfg(
+                proportion=1.0 / 6,          # col 4 — 离散障碍物（纯凸起，需配合机械臂翻越）
+                obstacle_height_mode="fixed", # 只生成凸起障碍物，无凹坑
+                obstacle_height_range=(0.15, 0.45), # 障碍高度
+                obstacle_width_range=(4.0, 6.0),     # 障碍宽度
+                num_obstacles=40, 
+                platform_width=5.0,
                 border_width=0.25,
             ),
             "flat_end": terrain_gen.MeshPlaneTerrainCfg(
@@ -153,8 +155,8 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     
     # 控制缩放
     action_scale = 8.2  # 履带速度控制缩放，v_max = ω_limit × r_wheel = 8.2 rad/s × 0.245 m ≈ 2.0 m/s
-    position_action_scale = 1.5  # 机械臂位置控制缩放，每步最大位置增量 = 1.0 × dt（1/120*2） × 1.5 = 0.025 rad -> 1.5 rad/s
-    body_yaw_scale = 1.5  # 车体偏航控制缩放，每步最大偏航增量 = 1.0 × dt × 1.5 = 0.025 rad -> 1.5 rad/s
+    position_action_scale = 2.5  # 机械臂位置控制缩放，每步最大位置增量 = 1.0 × dt（1/120*2） × 1.5 = 0.025 rad -> 1.5 rad/s
+    body_yaw_scale = 2.5  # 车体偏航控制缩放，每步最大偏航增量 = 1.0 × dt × 1.5 = 0.025 rad -> 1.5 rad/s
 
     # 速度跟踪奖励参数
     tracking_lin_vel_sigma = 0.5      # exp(-error/sigma) 的衰减因子，越小奖励越集中于精确匹配
@@ -173,3 +175,4 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     base_height_offset = 0.5   # excavator.py 中的 init_state pos z 定义
     arm_torque_scale = 0.00001 # 机械臂力矩缩放：typical stiffness ~500k → torque ~10k-50k → 归一化到 ~0.1-0.5
     contact_force_scale = 0.00002 # 铲斗接触力缩放
+    bucket_rel_pos_scale = 0.2     # 铲斗末端相对底盘坐标缩放：典型 5m -> 1.0
