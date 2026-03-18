@@ -417,11 +417,11 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # turning_reward = torch.clamp(correct_dir, min=0.0) * torch.abs(yaw_rate) #方向正确时奖励角速度大小
 
         # 后退惩罚 (-, 0]
-        # 放宽后退惩罚：允许合理限度内的小幅倒车，以辅助大角度就地转向调整
+        # 放宽后退惩罚：允许合理限度内的小幅倒车（<0.1），但惩罚持续的大幅度后退，防止用手臂推着底盘一直后退越界
         body_forward_vel = self.base_link_lin_vel_b[:, 0]
         forward_vel = self.root_link_vel_w[:, 1] #前进速度（world y 方向，link origin 速度）
-        backward_body_penalty = -torch.clamp(-body_forward_vel - 0.5, min=0.0)
-        backward_world_penalty = -torch.clamp(-forward_vel - 0.5, min=0.0)
+        backward_body_penalty = -torch.square(torch.clamp(-body_forward_vel - 0.1, min=0.0))
+        backward_world_penalty = -torch.square(torch.clamp(-forward_vel - 0.1, min=0.0))
 
         # 侧滑惩罚：适度横向滑动惩罚，防止底盘无脑侧滑和乱转，但不应过分苛刻
         slip_penalty = -torch.abs(self.base_link_lin_vel_b[:, 1])
@@ -456,9 +456,10 @@ class ExcavatorPpoEnv(DirectRLEnv):
         bucket_contact_z = self._bucket_contact.data.net_forces_w[:, 0, 2].clamp(min=0.0)
         contact_strength = 1.0 - torch.exp(-bucket_contact_z / 1500.0)
         
-        # 拖地惩罚 (-, 0]：如果在平路顺畅走时不用收起机械臂，将受到强惩罚
-        # 在受阻时(actual_vel<0.3)立即豁免，使其敢于支撑地面
-        drag_penalty = -contact_strength * (actual_forward_vel > 0.3).float()
+        # 拖地惩罚 (-, 0]：顺畅行驶或是大差角转弯（尚未对准目标）时，严禁机械臂拖地。
+        # 只有在底盘大体朝向目标，且由于遇到障碍物而导致受困时，才豁免拖地惩罚。
+        heading_alignment_early = torch.clamp(torch.cos(self.heading_error), min=0.0)
+        drag_penalty = -contact_strength * (1.0 - heading_alignment_early * struggling_intensity)
 
         # 上装能耗与拨浪鼓惩罚：
         # 惩罚上装动作命令的绝对幅度，抑制无意义的晃动
@@ -475,6 +476,9 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # 尽量引导它把机械臂收回并且指着正前方，受困时稍微宽容以允许战术性走位
         upper_alignment_reward = (1.0 - 0.5 * struggling_intensity) * torch.exp(-base_to_upper_yaw_error / 0.5)
         
+        # 【新增】严惩车体与底盘的偏角，强迫其必须整体正向面对目标，杜绝侧向顶起底盘或向后划船。允许约20度(0.35rad)容差
+        cab_misalignment_penalty = -torch.square(torch.clamp(base_to_upper_yaw_error - 0.35, min=0.0))
+
         # 【新增】强力惩罚机械臂处于底盘后方（超过90度），杜绝“向后划船”
         arm_backward_penalty = -torch.clamp(base_to_upper_yaw_error - math.pi/2, min=0.0)
 
@@ -505,17 +509,20 @@ class ExcavatorPpoEnv(DirectRLEnv):
         )
         
         # 2. 受困越障反馈：重点鼓励产生“力学后果”的支撑！
+        # 越障反馈基础前置约束：必须保持机械臂大体位于正前方才能获得完整支撑奖励，若属于侧向支撑顶起底盘，则奖励骤减。
+        cab_alignment_factor = torch.exp(-base_to_upper_yaw_error / 0.5)
+
         # (1) 支撑静态反馈：不仅仅要求抬升，只要在受困状态下能把铲斗压实地面，就给予奖励。打破不敢碰地的限制。
-        support_reward = struggling_intensity * contact_strength * heading_alignment
+        support_reward = struggling_intensity * contact_strength * heading_alignment * cab_alignment_factor
 
         # (2) 动态反作用力激赏：不仅把铲斗按地上了，还借反作用力把底盘往上撑起了（有向上Z速度或产生较大的支撑位移），给予高分。
         # 不再使用单纯的 contact_strength，而是关注支撑带来的实际底盘 Z 轴抬升效果。这迫使它必须动态施力，而不是静态发呆。
         lift_vel = torch.clamp(self.root_link_vel_w[:, 2], min=0.0, max=2.0)
-        support_lift_reward = struggling_intensity * contact_strength * lift_vel * heading_alignment
+        support_lift_reward = struggling_intensity * contact_strength * lift_vel * heading_alignment * cab_alignment_factor
         
         # (3) 越障突围推进：在受困且下压支撑状态下，成功向前掘进挤出位移。这鼓励机械臂作为“腿”来爬行。
         effective_forward = torch.clamp(progress_vel, min=0.0, max=cfg.lin_vel_x_range[1])
-        support_forward_reward = struggling_intensity * contact_strength * effective_forward * heading_alignment
+        support_forward_reward = struggling_intensity * contact_strength * effective_forward * heading_alignment * cab_alignment_factor
 
         # 【新增】支撑抬升时的打转惩罚
         # 当底盘被抬起时（support_lift_reward较大），严惩车体yaw轴旋转，迫使其保持稳定对齐目标
@@ -536,6 +543,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
             + 0.05 * upper_effort                       # 放宽对上装动作的惩罚，允许其自由摸索最佳越障支撑姿态
             + 0.2 * action_rate                         # 动作平滑保护
             + 1.0 * upper_alignment_reward              # 【新增】畅通时鼓励机械臂朝前
+            + 2.0 * cab_misalignment_penalty            # 【新增】严惩车体与底盘偏角，避免侧翻和侧向通过障碍
             + 5.0 * arm_backward_penalty                # 【新增】严惩机械臂向后“划船”
             + 1.0 * air_shake_penalty                   # 【新增】修复“甩鞭”作弊
             + 5.0 * lift_spin_penalty                   # 【新增】严拒抬升车体时打转偏航，避免转向侧翻
@@ -608,7 +616,8 @@ class ExcavatorPpoEnv(DirectRLEnv):
         default_root_state[:, 1] += random_y
 
         # 初始朝向随机，以目标航向为中心 ±π
-        random_yaw = self.commands[env_ids, 3] + (torch.rand(n, device=self.device) - 0.5) * 2.0 * math.pi #在目标航向基础上添加±180°的随机偏航
+        # random_yaw = self.commands[env_ids, 3] + (torch.rand(n, device=self.device) - 0.5) * 2.0 * math.pi #在目标航向基础上添加±180°的随机偏航
+        random_yaw = self.commands[env_ids, 3] + (torch.rand(n, device=self.device) - 0.5) * math.pi #在目标航向基础上添加±90°的随机偏航
         default_root_state[:, 3:7] = math_utils.quat_from_angle_axis(random_yaw.unsqueeze(-1), self.up_dir).reshape(-1, 4) #根据随机朝向计算初始四元数
 
         self.robot.write_root_state_to_sim(default_root_state, env_ids)

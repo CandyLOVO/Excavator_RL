@@ -75,7 +75,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
 
     # 地形配置
     track_num_stages = 6          # 地形阶段数
-    track_width = 40.0            # 赛道宽度 (m)
+    track_width = 50.0            # 赛道宽度 (m)
     track_section_length = 25.0   # 每段地形沿 y 方向长度 (m)
     track_difficulty = 0.5        # 地形难度（0.0~1.0），控制随机粗糙度、障碍密度/高度、波浪振幅、台阶高度等参数
     _border_width = 0.0           # 地形边界平坦区 (m)
