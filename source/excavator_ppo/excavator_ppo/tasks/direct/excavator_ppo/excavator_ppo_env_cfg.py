@@ -17,7 +17,7 @@ import math
 class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2 #2个模拟时间步更新一次动作
-    episode_length_s = 80.0  # 更长episode给挖掘机更多时间完成复杂地形
+    episode_length_s = 130.0  # 更长episode给挖掘机更多时间完成复杂地形
 
     # - spaces definition
     action_space = 6
@@ -76,7 +76,7 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
     # 地形配置
     track_num_stages = 6          # 地形阶段数
     track_width = 50.0            # 赛道宽度 (m)
-    track_section_length = 25.0   # 每段地形沿 y 方向长度 (m)
+    track_section_length = 20.0   # 每段地形沿 y 方向长度 (m)
     track_difficulty = 0.5        # 地形难度（0.0~1.0），控制随机粗糙度、障碍密度/高度、波浪振幅、台阶高度等参数
     _border_width = 0.0           # 地形边界平坦区 (m)
     random_start_col_min = 0      # 初始列随机下界（包含）
@@ -107,8 +107,8 @@ class ExcavatorPpoEnvCfg(DirectRLEnvCfg):
             "pyramid_stairs": terrain_gen.HfPyramidStairsTerrainCfg(
                 proportion=1.0 / 6,          # col 2 — 金字塔台阶（模拟采矿阶梯/土方边坡）
                 step_height_range=(0.2, 0.4),
-                step_width=5.0,               # 台阶宽度
-                platform_width=10.0,           # 顶部平台
+                step_width=4.0,               # 台阶宽度
+                platform_width=4.0,           # 顶部平台
                 border_width=0.25,
             ),
             "wave": terrain_gen.HfWaveTerrainCfg(
