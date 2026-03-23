@@ -459,7 +459,11 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # 拖地惩罚 (-, 0]：顺畅行驶或是大差角转弯（尚未对准目标）时，严禁机械臂拖地。
         # 只有在底盘大体朝向目标，且由于遇到障碍物而导致受困时，才豁免拖地惩罚。
         heading_alignment_early = torch.clamp(torch.cos(self.heading_error), min=0.0)
-        drag_penalty = -contact_strength * (1.0 - heading_alignment_early * struggling_intensity)
+        # 为防止受困初期 struggling_intensity 尚未满导致误伤触地动作（引发“悬空不敢放臂”现象）
+        # 这里检测到指令要求前进且速度由于障碍被严重受阻，立刻给予触地惩罚豁免特权！
+        is_blocked = ((cmd_forward_vel > 0.3) & (actual_forward_vel < 0.2)).float()
+        effective_struggle = torch.clamp(struggling_intensity + is_blocked, min=0.0, max=1.0)
+        drag_penalty = -contact_strength * (1.0 - heading_alignment_early * effective_struggle)
 
         # 上装能耗与拨浪鼓惩罚：
         # 惩罚上装动作命令的绝对幅度，抑制无意义的晃动
@@ -512,16 +516,24 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # 越障反馈基础前置约束：必须保持机械臂大体位于正前方才能获得完整支撑奖励，若属于侧向支撑顶起底盘，则奖励骤减。
         cab_alignment_factor = torch.exp(-base_to_upper_yaw_error / 0.5)
 
-        # (1) 支撑静态反馈：不仅仅要求抬升，只要在受困状态下能把铲斗压实地面，就给予奖励。打破不敢碰地的限制。
-        support_reward = struggling_intensity * contact_strength * heading_alignment * cab_alignment_factor
+        # 首先计算运动指标，为后续支撑奖励评价提供物理依据
+        lift_vel = torch.clamp(self.root_link_vel_w[:, 2], min=0.0, max=2.0)
+        effective_forward = torch.clamp(progress_vel, min=0.0, max=cfg.lin_vel_x_range[1])
+
+        # (1) 支撑静态反馈重构：绝对不惩罚触地动作（彻底破除“地面是岩浆”的悬空不敢碰地陷阱）
+        # 去除了 min=-1.0 的负分截断！现在，当物理增量 combined_movement 为 0（例如刚接触地面还未产生反作用力，或卡死限位）时，
+        # support_val 降为自然 0。这意味着触地本身不会遭受任何惩罚，鼓励它大胆伸臂试探！
+        # 而由于 0 无法抵消保持僵硬姿势所带来的 upper_effort 能耗惩罚，当其被机械限位真正卡死而无法产生抬升时，
+        # 它依然能自发明白“按住不动是耗能且徒劳的”，从而主动抬臂重试，实现多次支撑。
+        combined_movement = effective_forward + 1.5 * lift_vel
+        support_val = torch.clamp(combined_movement * 5.0, min=0.0, max=1.0)
+        support_reward = struggling_intensity * contact_strength * heading_alignment * cab_alignment_factor * support_val
 
         # (2) 动态反作用力激赏：不仅把铲斗按地上了，还借反作用力把底盘往上撑起了（有向上Z速度或产生较大的支撑位移），给予高分。
-        # 不再使用单纯的 contact_strength，而是关注支撑带来的实际底盘 Z 轴抬升效果。这迫使它必须动态施力，而不是静态发呆。
-        lift_vel = torch.clamp(self.root_link_vel_w[:, 2], min=0.0, max=2.0)
+        # 这里关注支撑带来的实际底盘 Z 轴抬升效果。迫使它必须动态施力，而不是静态发呆。
         support_lift_reward = struggling_intensity * contact_strength * lift_vel * heading_alignment * cab_alignment_factor
         
         # (3) 越障突围推进：在受困且下压支撑状态下，成功向前掘进挤出位移。这鼓励机械臂作为“腿”来爬行。
-        effective_forward = torch.clamp(progress_vel, min=0.0, max=cfg.lin_vel_x_range[1])
         support_forward_reward = struggling_intensity * contact_strength * effective_forward * heading_alignment * cab_alignment_factor
 
         # 【新增】支撑抬升时的打转惩罚
