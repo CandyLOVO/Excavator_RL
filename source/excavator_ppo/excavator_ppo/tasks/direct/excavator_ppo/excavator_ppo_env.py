@@ -540,7 +540,13 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # 当底盘被抬起时（support_lift_reward较大），严惩车体yaw轴旋转，迫使其保持稳定对齐目标
         lift_spin_penalty = - support_lift_reward * torch.square(self.robot.data.root_com_ang_vel_b[:, 2])
 
+        # 【新增】到达终点区域一半的稀疏奖励
+        robot_pos = self.robot.data.root_pos_w
+        reached_goal = robot_pos[:, 1] >= self.goal_y
+        goal_reward = 2000.0 * reached_goal.float()
+
         total_reward = (
+            + 1.0 * goal_reward                         # 【新增】抵达终点的最终巨大稀疏奖励
             + 6.0 * progress_reward                     # 强制要求面向目标且产生位移
             + 4.0 * support_lift_reward                 # 受困进阶反馈：产生实际抬升效果！！
             + 6.0 * support_forward_reward              # 受困终极杀招：撑起车子并成功向目标滑动跨越障碍
@@ -584,8 +590,11 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # 出界检测
         too_far_back = robot_pos[:, 1] < (self.start_y - 5.0) #当前进方向坐标小于起点坐标-5m时，认为越界
         too_far_side = torch.abs(robot_pos[:, 0]) > self.half_track_width #当前横向坐标绝对值大于半轨道宽度时，认为越界
+        
+        # 到达终点区域一半（成功跨越所有障碍）检测
+        reached_goal = robot_pos[:, 1] >= self.goal_y
 
-        terminated = flipped | too_far_back | too_far_side | fallen_into_void
+        terminated = flipped | too_far_back | too_far_side | fallen_into_void | reached_goal
         truncated = time_out.to(torch.bool)
         return terminated, truncated
 
