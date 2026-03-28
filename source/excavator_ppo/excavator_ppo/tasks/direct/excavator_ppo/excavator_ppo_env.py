@@ -455,7 +455,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # 获取铲斗触地强度
         bucket_contact_z = self._bucket_contact.data.net_forces_w[:, 0, 2].clamp(min=0.0)
         contact_strength = 1.0 - torch.exp(-bucket_contact_z / 1500.0)
-        
+
         # 拖地惩罚 (-, 0]：顺畅行驶或是大差角转弯（尚未对准目标）时，严禁机械臂拖地。
         # 只有在底盘大体朝向目标，且由于遇到障碍物而导致受困时，才豁免拖地惩罚。
         heading_alignment_early = torch.clamp(torch.cos(self.heading_error), min=0.0)
@@ -506,10 +506,12 @@ class ExcavatorPpoEnv(DirectRLEnv):
         progress_reward_raw = torch.clamp(progress_vel, min=-cfg.lin_vel_x_range[1], max=cfg.lin_vel_x_range[1])
         
         # 使用 cos 门控软惩罚未对齐时的前进
+        # 受困时衰减后退惩罚力度，降低恢复动作（抬臂→微退→重试）的即时代价
+        backward_dampening = 1.0 - 0.5 * struggling_intensity
         progress_reward = torch.where(
             progress_reward_raw > 0,
             progress_reward_raw * heading_alignment,
-            progress_reward_raw
+            progress_reward_raw * backward_dampening
         )
         
         # 2. 受困越障反馈：重点鼓励产生“力学后果”的支撑！
@@ -540,6 +542,11 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # 当底盘被抬起时（support_lift_reward较大），严惩车体yaw轴旋转，迫使其保持稳定对齐目标
         lift_spin_penalty = - support_lift_reward * torch.square(self.robot.data.root_com_ang_vel_b[:, 2])
 
+        # 速度缺额惩罚：被困且无前进速度时，持续施加惩罚，使"原地不动"代价高昂
+        # 与接触状态无关——不区分"臂触地"vs"臂抬起"，避免在探索阶段产生反接触偏见
+        # 当 struggling=1.0 时: heading(+1.5)+alignment(+1.0)-deficit(3.0) = -0.5/步 → 净负值，压力行动
+        progress_deficit_penalty = -struggling_intensity
+
         # 【新增】到达终点区域一半的稀疏奖励
         robot_pos = self.robot.data.root_pos_w
         reached_goal = robot_pos[:, 1] >= self.goal_y
@@ -565,6 +572,7 @@ class ExcavatorPpoEnv(DirectRLEnv):
             + 5.0 * arm_backward_penalty                # 【新增】严惩机械臂向后“划船”
             + 1.0 * air_shake_penalty                   # 【新增】修复“甩鞭”作弊
             + 5.0 * lift_spin_penalty                   # 【新增】严拒抬升车体时打转偏航，避免转向侧翻
+            + 3.0 * progress_deficit_penalty              # 被困时速度缺额惩罚，使原地不动代价高昂
         )
 
         total_reward = torch.nan_to_num(total_reward, nan=0.0, posinf=0.0, neginf=0.0)
