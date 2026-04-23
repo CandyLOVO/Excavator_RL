@@ -475,6 +475,11 @@ class ExcavatorPpoEnv(DirectRLEnv):
         cab_yaw_vel = self.robot.data.joint_vel[:, self._body_dof_idx[0]]
         air_shake_penalty = -(1.0 - contact_strength) * torch.square(cab_yaw_vel)
 
+        # 受困摇摆惩罚：底盘被困时严惩上装云台在未接触地面时的快速偏航摇摆
+        # (1-contact_strength) 门控：臂在地面支撑时允许云台微调定位，臂悬空时才惩罚拨浪鼓
+        # 与 air_shake_penalty 互补：air_shake 是常态基线，本项在受困时加码
+        struggling_oscillation_penalty = -struggling_intensity * (1.0 - contact_strength) * torch.square(cab_yaw_vel)
+
         # 获取当前底盘相对于上装的相对偏航角（保证平时机械臂尽量指向底盘正前方，随时准备越障）
         base_to_upper_yaw_error = torch.abs(self.robot.data.joint_pos[:, self._body_dof_idx[0]] - self.default_joint_pos[:, self._body_dof_idx[0]])
         # 尽量引导它把机械臂收回并且指着正前方，受困时稍微宽容以允许战术性走位
@@ -508,9 +513,11 @@ class ExcavatorPpoEnv(DirectRLEnv):
         # 使用 cos 门控软惩罚未对齐时的前进
         # 受困时衰减后退惩罚力度，降低恢复动作（抬臂→微退→重试）的即时代价
         backward_dampening = 1.0 - 0.5 * struggling_intensity
+        # 受困且无臂支撑时的进度折扣：纯轮滑/摇摆产生的微量前进变为 40%，不足以维持振荡策略
+        stuck_no_arm_factor = 1.0 - 0.6 * struggling_intensity * (1.0 - contact_strength)
         progress_reward = torch.where(
             progress_reward_raw > 0,
-            progress_reward_raw * heading_alignment,
+            progress_reward_raw * heading_alignment * stuck_no_arm_factor,
             progress_reward_raw * backward_dampening
         )
         
@@ -529,6 +536,11 @@ class ExcavatorPpoEnv(DirectRLEnv):
         support_lift_reward = struggling_intensity * contact_strength * lift_vel * heading_alignment * cab_alignment_factor
         
         support_forward_reward = struggling_intensity * contact_strength * effective_forward * heading_alignment * cab_alignment_factor
+
+        # 受困触地准备奖励：当底盘被困时，机械臂正向触地即给正向信号（无需等待实际位移）
+        # 解决支撑奖励的"鸡生蛋"问题：策略需要先触地才能产生位移，但现有 support_reward 需要位移才给信号
+        # 此项降低了二次机械臂部署的探索门槛，引导策略从拨浪鼓式摇摆转向机械臂重新支撑
+        contact_preparation_reward = struggling_intensity * contact_strength * heading_alignment * cab_alignment_factor
 
         # 【新增】支撑抬升时的打转惩罚
         # 当底盘被抬起时（support_lift_reward较大），严惩车体yaw轴旋转，迫使其保持稳定对齐目标
@@ -562,8 +574,10 @@ class ExcavatorPpoEnv(DirectRLEnv):
             + 1.0 * upper_alignment_reward              # 【新增】畅通时鼓励机械臂朝前
             + 2.0 * cab_misalignment_penalty            # 【新增】严惩车体与底盘偏角，避免侧翻和侧向通过障碍
             + 5.0 * arm_backward_penalty                # 【新增】严惩机械臂向后“划船”
-            + 1.0 * air_shake_penalty                   # 【新增】修复“甩鞭”作弊
-            + 5.0 * lift_spin_penalty                   # 【新增】严拒抬升车体时打转偏航，避免转向侧翻
+            + 1.0 * air_shake_penalty                   # 修复"甩鞭"作弊
+            + 3.0 * struggling_oscillation_penalty       # 受困+无接触时严惩云台摇摆，封堵拨浪鼓漏洞
+            + 2.0 * contact_preparation_reward           # 受困时鼓励机械臂正向触地（降低二次支撑探索门槛）
+            + 5.0 * lift_spin_penalty                    # 严拒抬升车体时打转偏航，避免转向侧翻
             + 3.0 * progress_deficit_penalty              # 被困时速度缺额惩罚，使原地不动代价高昂
         )
 
