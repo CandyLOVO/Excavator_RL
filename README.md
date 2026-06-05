@@ -7,7 +7,7 @@
 ### 挖掘机模型
 
 <p align="center">
-  <img src="https://github.com/CandyLOVO/Excavator_RL/blob/main/excavator.png" alt="excavator">
+  <img src="https://github.com/CandyLOVO/Excavator_RL/blob/main/excavator.png" alt="excavator" width="60%">
 </p>
 
 ### 地形设计
@@ -17,7 +17,7 @@
 挖掘机在全流程中，依次通过起点平地、随机粗糙地形、金字塔台阶、正弦波浪地形、离散随机障碍地形，最终到达终点平地视为任务完成，并给予稀疏奖励。
 
 <p align="center">
-  <img src="https://github.com/CandyLOVO/Excavator_RL/blob/main/%E5%AE%8C%E6%95%B4%E5%9C%B0%E5%BD%A2%E5%9B%BE-%E6%96%9C%E5%90%91.png" alt="terrain">
+  <img src="https://github.com/CandyLOVO/Excavator_RL/blob/main/%E5%AE%8C%E6%95%B4%E5%9C%B0%E5%BD%A2%E5%9B%BE-%E6%96%9C%E5%90%91.png" alt="terrain" width="60%">
 </p>
 
 ## 研究思路
@@ -49,7 +49,7 @@
 ### 奖励曲线
 
 <p align="center">
-  <img src="https://github.com/CandyLOVO/Excavator_RL/blob/main/all_terrains_mean_reward.png" alt="all_terrains_mean_reward">
+  <img src="https://github.com/CandyLOVO/Excavator_RL/blob/main/all_terrains_mean_reward.png" alt="all_terrains_mean_reward" width="80%">
 </p>
 
 ---
@@ -57,7 +57,7 @@
 蓝线：去除机械臂有关奖励函数，仅保留底盘行驶相关奖励。
 
 <p align="center">
-  <img src="https://github.com/CandyLOVO/Excavator_RL/blob/main/%E6%97%A0%E6%9C%BA%E6%A2%B0%E8%87%82%E5%A5%96%E5%8A%B1.png" alt="without robotic arm rewards">
+  <img src="https://github.com/CandyLOVO/Excavator_RL/blob/main/%E6%97%A0%E6%9C%BA%E6%A2%B0%E8%87%82%E5%A5%96%E5%8A%B1.png" alt="without robotic arm rewards" width="80%">
 </p>
 
 ---
@@ -65,5 +65,5 @@
 绿线：使用6维联合控制，去掉受困识别门控，越障奖励始终激活。
 
 <p align="center">
-  <img src="https://github.com/CandyLOVO/Excavator_RL/blob/main/%E6%97%A0%E8%B6%8A%E9%9A%9C%E9%97%A8%E6%8E%A7.png" alt="without obstacle crossing rewards">
+  <img src="https://github.com/CandyLOVO/Excavator_RL/blob/main/%E6%97%A0%E8%B6%8A%E9%9A%9C%E9%97%A8%E6%8E%A7.png" alt="without obstacle crossing rewards" width="80%">
 </p>
