@@ -15,9 +15,11 @@
 ## 效果展示
 
 通过随机粗糙地形、金字塔台阶地形
-！[./Demonstration Video1.gif](https://github.com/CandyLOVO/Excavator_RL/blob/main/Demonstration%20Video1.gif)
+
+![./Demonstration Video1.gif](https://github.com/CandyLOVO/Excavator_RL/blob/main/Demonstration%20Video1.gif)
 
 ---
 
 通过波浪起伏地形、离散障碍物地形
-！[https://github.com/CandyLOVO/Excavator_RL/blob/main/Demonstration%20Video2.gif](https://github.com/CandyLOVO/Excavator_RL/blob/main/Demonstration%20Video2.gif)
+
+![https://github.com/CandyLOVO/Excavator_RL/blob/main/Demonstration%20Video2.gif](https://github.com/CandyLOVO/Excavator_RL/blob/main/Demonstration%20Video2.gif)
